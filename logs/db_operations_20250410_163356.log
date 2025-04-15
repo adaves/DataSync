@@ -1,0 +1,13 @@
+2025-04-10 16:33:57,370 - INFO - Successfully connected to the database
+2025-04-10 16:34:13,891 - INFO - Starting batch deletion of 110,204 records
+2025-04-10 16:34:13,891 - INFO - Processing Q1 (01/01/2025)
+2025-04-10 16:34:15,456 - INFO - Q1: Deleted 27725 records
+2025-04-10 16:34:15,457 - INFO - Processing Q2 (04/01/2025)
+2025-04-10 16:34:16,570 - INFO - Q2: Deleted 27877 records
+2025-04-10 16:34:16,571 - INFO - Processing Q3 (07/01/2025)
+2025-04-10 16:34:17,696 - INFO - Q3: Deleted 27384 records
+2025-04-10 16:34:17,696 - INFO - Processing Q4 (10/01/2025)
+2025-04-10 16:34:18,738 - INFO - Q4: Deleted 27218 records
+2025-04-10 16:34:19,219 - INFO - Verification successful: No records remain for year 2025
+2025-04-10 16:34:19,219 - INFO - Total records deleted: 110,204
+2025-04-10 16:35:24,559 - INFO - Database connection closed

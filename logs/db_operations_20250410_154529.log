@@ -1,0 +1,6 @@
+2025-04-10 15:45:30,240 - INFO - Successfully connected to the database
+2025-04-10 15:45:55,727 - INFO - Starting batch deletion of 110,204 records
+2025-04-10 15:45:56,352 - ERROR - Error in batch 1: 'NoneType' object is not iterable
+2025-04-10 15:45:56,449 - ERROR - Error executing query: ('42000', '[42000] [Microsoft][ODBC Microsoft Access Driver] Syntax error in DROP TABLE or DROP INDEX. (-3556) (SQLExecDirectW)')
+2025-04-10 15:45:56,449 - ERROR - Error deleting data for year 2025: 'NoneType' object is not iterable
+2025-04-10 15:46:09,325 - INFO - Database connection closed

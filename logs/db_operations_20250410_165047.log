@@ -1,0 +1,5 @@
+2025-04-10 16:50:47,994 - INFO - Successfully connected to the database
+2025-04-10 16:51:08,663 - INFO - Found 1 Excel files to process
+2025-04-10 16:51:08,663 - INFO - Processing file: 4.10.2025 - GROCERY - ALL - Projected KPI's COT - TG Fixed Public - Default.xlsx
+2025-04-10 16:51:08,691 - ERROR - Error processing file 4.10.2025 - GROCERY - ALL - Projected KPI's COT - TG Fixed Public - Default.xlsx: Missing optional dependency 'openpyxl'.  Use pip or conda to install openpyxl.
+2025-04-10 16:51:22,578 - INFO - Database connection closed
