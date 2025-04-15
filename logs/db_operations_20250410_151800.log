@@ -1,3 +1,0 @@
-2025-04-10 15:18:00,914 - INFO - Successfully connected to the database
-2025-04-10 15:18:26,822 - ERROR - Error deleting data for year 2025: 'COUNT(*)'
-2025-04-10 15:20:48,689 - INFO - Database connection closed

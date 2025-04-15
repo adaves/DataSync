@@ -1,6 +1,0 @@
-2025-04-10 16:51:59,169 - INFO - Successfully connected to the database
-2025-04-10 16:52:09,911 - INFO - Found 1 Excel files to process
-2025-04-10 16:52:09,911 - INFO - Processing file: 4.10.2025 - GROCERY - ALL - Projected KPI's COT - TG Fixed Public - Default.xlsx
-2025-04-10 16:52:21,989 - ERROR - Error inserting data into tblProjectedDataPTP: ('HYC00', '[HYC00] [Microsoft][ODBC Microsoft Access Driver]Optional feature not implemented  (106) (SQLBindParameter)')
-2025-04-10 16:52:21,990 - ERROR - Error processing file 4.10.2025 - GROCERY - ALL - Projected KPI's COT - TG Fixed Public - Default.xlsx: ('HYC00', '[HYC00] [Microsoft][ODBC Microsoft Access Driver]Optional feature not implemented  (106) (SQLBindParameter)')
-2025-04-10 16:54:14,592 - INFO - Database connection closed

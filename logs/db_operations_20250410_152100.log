@@ -1,4 +1,0 @@
-2025-04-10 15:21:00,721 - INFO - Successfully connected to the database
-2025-04-10 15:21:29,987 - ERROR - Error executing query: ('HY000', '[HY000] [Microsoft][ODBC Microsoft Access Driver] File sharing lock count exceeded. Increase MaxLocksPerFile registry entry. (-1033) (SQLExecDirectW)')
-2025-04-10 15:21:29,987 - ERROR - Error deleting data for year 2025: ('HY000', '[HY000] [Microsoft][ODBC Microsoft Access Driver] File sharing lock count exceeded. Increase MaxLocksPerFile registry entry. (-1033) (SQLExecDirectW)')
-2025-04-10 15:21:37,842 - INFO - Database connection closed

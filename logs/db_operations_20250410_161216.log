@@ -1,5 +1,0 @@
-2025-04-10 16:12:17,101 - INFO - Successfully connected to the database
-2025-04-10 16:13:06,255 - INFO - Starting batch deletion of 110,204 records
-2025-04-10 16:13:06,262 - ERROR - Error in batch 1: ('42000', '[42000] [Microsoft][ODBC Microsoft Access Driver] Syntax error in DELETE statement. (-3505) (SQLExecDirectW)')
-2025-04-10 16:13:06,263 - ERROR - Error deleting data for year 2025: ('42000', '[42000] [Microsoft][ODBC Microsoft Access Driver] Syntax error in DELETE statement. (-3505) (SQLExecDirectW)')
-2025-04-10 16:17:33,872 - INFO - Database connection closed
