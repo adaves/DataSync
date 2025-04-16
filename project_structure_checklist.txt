@@ -49,10 +49,15 @@ Feature Implementation Groups
     - [x] src/tests/integration/test_database_integration.py
 
 [ ] Test Fixtures:
-    - [ ] src/tests/fixtures/mock_database/
+    - [x] src/tests/fixtures/mock_database/
+        - [x] create_mock_db.py
+        - [x] README.md
+        - [x] mock_database.accdb
 
 [ ] Configuration:
-    - [ ] config/settings.yaml
+    - [x] config/settings.yaml
+    - [x] src/datasync/utils/config.py
+    - [x] src/tests/unit/utils/test_config.py
 
 2. Create Operations Implementation
 --------------------------------
