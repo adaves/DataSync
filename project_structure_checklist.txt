@@ -41,9 +41,9 @@ Feature Implementation Groups
     - [x] src/database/monitoring.py
 
 [ ] Unit Tests:
-    - [ ] src/tests/unit/database/test_operations.py
-    - [ ] src/tests/unit/database/test_validation.py
-    - [ ] src/tests/unit/database/test_monitoring.py
+    - [x] src/tests/unit/database/test_operations.py
+    - [x] src/tests/unit/database/test_validation.py
+    - [x] src/tests/unit/database/test_monitoring.py
 
 [ ] Integration Tests:
     - [ ] src/tests/integration/test_database_integration.py
