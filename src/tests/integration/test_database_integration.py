@@ -388,4 +388,411 @@ class TestDatabaseIntegration:
         finally:
             if db_operations.conn:
                 db_operations.execute_query("DROP TABLE TestTransactions")
-                db_operations.close() 
+                db_operations.close()
+
+class TestReadOperationsIntegration:
+    """Test suite for read operations integration tests."""
+    
+    @pytest.fixture(autouse=True)
+    def setup_test_data(self, db_operations):
+        """Set up test data for read operation tests."""
+        try:
+            db_operations.connect()
+            
+            # Create test tables
+            db_operations.execute_query("""
+                CREATE TABLE test_products (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT(50),
+                    category TEXT(50),
+                    price DECIMAL(10,2),
+                    stock INTEGER,
+                    created_date DATE
+                )
+            """)
+            
+            db_operations.execute_query("""
+                CREATE TABLE test_orders (
+                    id INTEGER PRIMARY KEY,
+                    product_id INTEGER,
+                    quantity INTEGER,
+                    order_date DATE,
+                    status TEXT(20)
+                )
+            """)
+            
+            # Insert test data
+            products = [
+                (1, "Product A", "Category 1", 10.99, 100, "2023-01-01"),
+                (2, "Product B", "Category 1", 15.99, 50, "2023-01-15"),
+                (3, "Product C", "Category 2", 20.99, 75, "2023-02-01"),
+                (4, "Product D", "Category 2", 25.99, 30, "2023-02-15"),
+                (5, "Product E", "Category 3", 30.99, 20, "2023-03-01")
+            ]
+            
+            orders = [
+                (1, 1, 5, "2023-01-10", "completed"),
+                (2, 2, 3, "2023-01-20", "completed"),
+                (3, 3, 2, "2023-02-05", "pending"),
+                (4, 4, 1, "2023-02-10", "completed"),
+                (5, 5, 4, "2023-03-05", "pending")
+            ]
+            
+            for product in products:
+                db_operations.execute_query(
+                    "INSERT INTO test_products VALUES (?, ?, ?, ?, ?, ?)",
+                    product
+                )
+            
+            for order in orders:
+                db_operations.execute_query(
+                    "INSERT INTO test_orders VALUES (?, ?, ?, ?, ?)",
+                    order
+                )
+            
+            yield
+            
+        finally:
+            # Clean up
+            db_operations.execute_query("DROP TABLE test_products")
+            db_operations.execute_query("DROP TABLE test_orders")
+            db_operations.close()
+    
+    def test_basic_read_operations(self, db_operations):
+        """Test basic read operations with real data."""
+        results = db_operations.read_records("test_products")
+        assert len(results) == 5
+        assert results[0]["name"] == "Product A"
+        assert results[0]["price"] == 10.99
+    
+    def test_filtering_operations(self, db_operations):
+        """Test filtering operations with real data."""
+        # Test basic filter
+        results = db_operations.read_records(
+            "test_products",
+            filters={"category": "Category 1"}
+        )
+        assert len(results) == 2
+        assert all(r["category"] == "Category 1" for r in results)
+        
+        # Test IN clause
+        results = db_operations.read_records(
+            "test_products",
+            filters={"id": [1, 3, 5]}
+        )
+        assert len(results) == 3
+        assert all(r["id"] in [1, 3, 5] for r in results)
+        
+        # Test date range
+        date_range = {
+            "column": "created_date",
+            "start_date": "2023-01-01",
+            "end_date": "2023-01-31"
+        }
+        results = db_operations.read_records(
+            "test_products",
+            date_range=date_range
+        )
+        assert len(results) == 2
+        assert all("2023-01" in r["created_date"] for r in results)
+    
+    def test_sorting_and_pagination(self, db_operations):
+        """Test sorting and pagination with real data."""
+        # Test sorting
+        results = db_operations.read_records(
+            "test_products",
+            sort_by=["price"],
+            sort_desc=True
+        )
+        assert len(results) == 5
+        assert results[0]["price"] == 30.99
+        assert results[-1]["price"] == 10.99
+        
+        # Test pagination
+        results = db_operations.read_records(
+            "test_products",
+            limit=2,
+            offset=2
+        )
+        assert len(results) == 2
+        assert results[0]["id"] == 3
+    
+    def test_aggregate_operations(self, db_operations):
+        """Test aggregate operations with real data."""
+        # Test basic aggregation
+        aggregates = {
+            "total_stock": "SUM(stock)",
+            "avg_price": "AVG(price)",
+            "product_count": "COUNT(*)"
+        }
+        results = db_operations.aggregate_query("test_products", aggregates)
+        assert len(results) == 1
+        assert results[0]["total_stock"] == 275
+        assert round(results[0]["avg_price"], 2) == 20.79
+        assert results[0]["product_count"] == 5
+        
+        # Test grouping
+        aggregates = {
+            "total_stock": "SUM(stock)",
+            "product_count": "COUNT(*)"
+        }
+        results = db_operations.aggregate_query(
+            "test_products",
+            aggregates,
+            group_by=["category"]
+        )
+        assert len(results) == 3
+        category1 = next(r for r in results if r["category"] == "Category 1")
+        assert category1["total_stock"] == 150
+    
+    def test_subquery_operations(self, db_operations):
+        """Test subquery operations with real data."""
+        # Test EXISTS subquery
+        subquery = """
+            SELECT 1 FROM test_orders 
+            WHERE test_orders.product_id = test_products.id 
+            AND test_orders.status = ?
+        """
+        results = db_operations.subquery(
+            "test_products",
+            subquery,
+            subquery_params=("completed",)
+        )
+        assert len(results) == 3
+        assert all(r["id"] in [1, 2, 4] for r in results)
+        
+        # Test subquery with additional filters
+        results = db_operations.subquery(
+            "test_products",
+            subquery,
+            subquery_params=("completed",),
+            filters={"category": "Category 1"}
+        )
+        assert len(results) == 2
+        assert all(r["category"] == "Category 1" for r in results)
+    
+    def test_complex_query_building(self, db_operations):
+        """Test complex query building with real data."""
+        query = db_operations.build_query(
+            "test_products",
+            columns=["id", "name", "price"],
+            filters={"category": "Category 1"},
+            sort_by=["price"],
+            sort_desc=True
+        )
+        results = db_operations.execute_query(query, ("Category 1",))
+        assert len(results) == 2
+        assert results[0]["price"] == 15.99
+        assert results[1]["price"] == 10.99
+
+class TestUpdateOperationsIntegration:
+    """Test suite for update operations integration tests."""
+    
+    @pytest.fixture(autouse=True)
+    def setup_test_data(self, db_operations):
+        """Set up test data for update operation tests."""
+        try:
+            db_operations.connect()
+            
+            # Create test tables
+            db_operations.execute_query("""
+                CREATE TABLE test_products (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT(50),
+                    category TEXT(50),
+                    price DECIMAL(10,2),
+                    stock INTEGER,
+                    last_updated DATETIME
+                )
+            """)
+            
+            db_operations.execute_query("""
+                CREATE TABLE test_orders (
+                    id INTEGER PRIMARY KEY,
+                    product_id INTEGER,
+                    quantity INTEGER,
+                    order_date DATE,
+                    status TEXT(20)
+                )
+            """)
+            
+            # Insert test data
+            products = [
+                (1, "Product A", "Category 1", 10.99, 100, "2023-01-01 10:00:00"),
+                (2, "Product B", "Category 1", 15.99, 50, "2023-01-15 11:00:00"),
+                (3, "Product C", "Category 2", 20.99, 75, "2023-02-01 12:00:00"),
+                (4, "Product D", "Category 2", 25.99, 30, "2023-02-15 13:00:00"),
+                (5, "Product E", "Category 3", 30.99, 20, "2023-03-01 14:00:00")
+            ]
+            
+            orders = [
+                (1, 1, 5, "2023-01-10", "completed"),
+                (2, 2, 3, "2023-01-20", "completed"),
+                (3, 3, 2, "2023-02-05", "pending"),
+                (4, 4, 1, "2023-02-10", "completed"),
+                (5, 5, 4, "2023-03-05", "pending")
+            ]
+            
+            for product in products:
+                db_operations.execute_query(
+                    "INSERT INTO test_products VALUES (?, ?, ?, ?, ?, ?)",
+                    product
+                )
+            
+            for order in orders:
+                db_operations.execute_query(
+                    "INSERT INTO test_orders VALUES (?, ?, ?, ?, ?)",
+                    order
+                )
+            
+            yield
+            
+        finally:
+            # Clean up
+            db_operations.execute_query("DROP TABLE test_products")
+            db_operations.execute_query("DROP TABLE test_orders")
+            db_operations.close()
+    
+    def test_single_record_update(self, db_operations):
+        """Test updating a single record."""
+        # Update a product
+        record = {
+            "id": 1,
+            "name": "Updated Product A",
+            "price": 12.99,
+            "stock": 150
+        }
+        result = db_operations.update_record("test_products", record, ["id"])
+        assert result == 1
+        
+        # Verify update
+        results = db_operations.execute_query(
+            "SELECT * FROM test_products WHERE id = 1"
+        )
+        assert len(results) == 1
+        assert results[0]["name"] == "Updated Product A"
+        assert results[0]["price"] == 12.99
+        assert results[0]["stock"] == 150
+        assert results[0]["category"] == "Category 1"  # Unchanged field
+    
+    def test_batch_update_products(self, db_operations):
+        """Test batch updating multiple products."""
+        # Prepare update records
+        records = [
+            {"id": 1, "price": 11.99, "stock": 200},
+            {"id": 2, "price": 16.99, "stock": 100},
+            {"id": 3, "price": 21.99, "stock": 150}
+        ]
+        
+        # Update records in batch
+        result = db_operations.batch_update("test_products", records, ["id"], batch_size=2)
+        assert result == 3
+        
+        # Verify updates
+        results = db_operations.execute_query(
+            "SELECT * FROM test_products WHERE id IN (1, 2, 3) ORDER BY id"
+        )
+        assert len(results) == 3
+        assert results[0]["price"] == 11.99
+        assert results[0]["stock"] == 200
+        assert results[1]["price"] == 16.99
+        assert results[1]["stock"] == 100
+        assert results[2]["price"] == 21.99
+        assert results[2]["stock"] == 150
+    
+    def test_update_with_conditions(self, db_operations):
+        """Test updating records with conditions."""
+        # Update all products in Category 1
+        updates = {
+            "price": 14.99,
+            "stock": 200
+        }
+        conditions = {
+            "category": "Category 1"
+        }
+        result = db_operations.update_with_conditions("test_products", updates, conditions)
+        assert result == 2
+        
+        # Verify updates
+        results = db_operations.execute_query(
+            "SELECT * FROM test_products WHERE category = 'Category 1'"
+        )
+        assert len(results) == 2
+        assert all(r["price"] == 14.99 for r in results)
+        assert all(r["stock"] == 200 for r in results)
+    
+    def test_update_transaction_rollback(self, db_operations):
+        """Test transaction rollback during update."""
+        # Start transaction
+        db_operations.begin_transaction()
+        
+        try:
+            # Update a product
+            record = {
+                "id": 1,
+                "name": "Updated Product A",
+                "price": 12.99
+            }
+            db_operations.update_record("test_products", record, ["id"])
+            
+            # Try to update with invalid data (should fail)
+            with pytest.raises(pyodbc.Error):
+                invalid_record = {
+                    "id": 2,
+                    "name": None,  # This should fail due to NOT NULL constraint
+                    "price": 15.99
+                }
+                db_operations.update_record("test_products", invalid_record, ["id"])
+            
+            # Verify rollback
+            results = db_operations.execute_query(
+                "SELECT * FROM test_products WHERE id = 1"
+            )
+            assert len(results) == 1
+            assert results[0]["name"] == "Product A"  # Original value
+            assert results[0]["price"] == 10.99  # Original value
+            
+        finally:
+            db_operations.rollback_transaction()
+    
+    def test_concurrent_updates(self, db_operations):
+        """Test handling of concurrent updates."""
+        # Update the same product multiple times
+        for i in range(5):
+            record = {
+                "id": 1,
+                "stock": 100 + i * 10
+            }
+            result = db_operations.update_record("test_products", record, ["id"])
+            assert result == 1
+        
+        # Verify final state
+        results = db_operations.execute_query(
+            "SELECT * FROM test_products WHERE id = 1"
+        )
+        assert len(results) == 1
+        assert results[0]["stock"] == 140  # 100 + (4 * 10)
+    
+    def test_update_with_join(self, db_operations):
+        """Test updating records based on join conditions."""
+        # Update product prices based on order status
+        updates = {
+            "price": "price * 1.1"  # 10% price increase
+        }
+        conditions = {
+            "id": """
+                SELECT DISTINCT p.id 
+                FROM test_products p
+                INNER JOIN test_orders o ON p.id = o.product_id
+                WHERE o.status = 'completed'
+            """
+        }
+        result = db_operations.update_with_conditions("test_products", updates, conditions)
+        assert result == 3  # Products 1, 2, and 4 have completed orders
+        
+        # Verify updates
+        results = db_operations.execute_query(
+            "SELECT * FROM test_products WHERE id IN (1, 2, 4)"
+        )
+        assert len(results) == 3
+        assert all(r["price"] > 10.99 for r in results)  # Prices should be increased 
