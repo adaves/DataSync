@@ -795,4 +795,154 @@ class TestUpdateOperationsIntegration:
             "SELECT * FROM test_products WHERE id IN (1, 2, 4)"
         )
         assert len(results) == 3
-        assert all(r["price"] > 10.99 for r in results)  # Prices should be increased 
+        assert all(r["price"] > 10.99 for r in results)  # Prices should be increased
+
+class TestDeleteOperationsIntegration:
+    """Integration tests for delete operations."""
+    
+    @pytest.fixture(autouse=True)
+    def setup(self, db_operations, temp_db_path):
+        """Setup test tables and data."""
+        # Create test tables
+        db_operations.execute_query("""
+            CREATE TABLE test_products (
+                id INTEGER PRIMARY KEY,
+                name TEXT,
+                category TEXT,
+                status TEXT,
+                deleted_at DATETIME
+            )
+        """)
+        
+        db_operations.execute_query("""
+            CREATE TABLE test_orders (
+                id INTEGER PRIMARY KEY,
+                product_id INTEGER,
+                quantity INTEGER,
+                status TEXT,
+                FOREIGN KEY (product_id) REFERENCES test_products(id)
+            )
+        """)
+        
+        # Insert test data
+        db_operations.execute_query("""
+            INSERT INTO test_products (id, name, category, status)
+            VALUES (1, 'Product1', 'Electronics', 'active'),
+                   (2, 'Product2', 'Electronics', 'inactive'),
+                   (3, 'Product3', 'Clothing', 'active')
+        """)
+        
+        db_operations.execute_query("""
+            INSERT INTO test_orders (id, product_id, quantity, status)
+            VALUES (1, 1, 2, 'pending'),
+                   (2, 1, 1, 'completed'),
+                   (3, 2, 3, 'pending')
+        """)
+        
+        yield
+        
+        # Cleanup
+        db_operations.execute_query("DROP TABLE test_orders")
+        db_operations.execute_query("DROP TABLE test_products")
+    
+    def test_delete_with_conditions(self, db_operations):
+        """Test delete with conditions in a real database scenario."""
+        # Delete inactive products
+        deleted_count = db_operations.delete_records("test_products", {"status": "inactive"})
+        assert deleted_count == 1
+        
+        # Verify remaining products
+        products = db_operations.execute_query("SELECT * FROM test_products")
+        assert len(products) == 2
+        assert all(p["status"] == "active" for p in products)
+    
+    def test_soft_delete_integration(self, db_operations):
+        """Test soft delete in a real database scenario."""
+        # Perform soft delete
+        success = db_operations.soft_delete("test_products", 1)
+        assert success is True
+        
+        # Verify product is marked as deleted
+        product = db_operations.execute_query("SELECT * FROM test_products WHERE id = 1")[0]
+        assert product["deleted_at"] is not None
+        
+        # Verify product is still in database
+        products = db_operations.execute_query("SELECT * FROM test_products")
+        assert len(products) == 3
+    
+    def test_cascade_delete_integration(self, db_operations):
+        """Test cascade delete in a real database scenario."""
+        # Configure cascade delete
+        cascade_config = [
+            {"table": "test_orders", "foreign_key": "product_id", "cascade_type": "delete"}
+        ]
+        
+        # Perform cascade delete
+        results = db_operations.cascade_delete("test_products", 1, cascade_config)
+        assert results["test_products"] == 1
+        assert results["test_orders"] == 2
+        
+        # Verify records are deleted
+        products = db_operations.execute_query("SELECT * FROM test_products")
+        orders = db_operations.execute_query("SELECT * FROM test_orders")
+        assert len(products) == 2
+        assert len(orders) == 1
+        assert all(o["product_id"] != 1 for o in orders)
+    
+    def test_delete_with_transaction_integration(self, db_operations):
+        """Test delete with transaction in a real database scenario."""
+        # Start transaction
+        db_operations.begin_transaction()
+        
+        try:
+            # Delete product and its orders
+            deleted_count = db_operations.delete_with_transaction("test_products", {"id": 1})
+            assert deleted_count == 1
+            
+            # Verify product is deleted
+            products = db_operations.execute_query("SELECT * FROM test_products")
+            assert len(products) == 2
+            
+            # Commit transaction
+            db_operations.commit_transaction()
+            
+        except Exception:
+            db_operations.rollback_transaction()
+            raise
+    
+    def test_delete_transaction_rollback_integration(self, db_operations):
+        """Test transaction rollback during delete in a real database scenario."""
+        # Start transaction
+        db_operations.begin_transaction()
+        
+        try:
+            # Attempt invalid delete
+            db_operations.delete_with_transaction("test_products", {"invalid_column": "value"})
+        except Exception:
+            # Rollback should occur automatically
+            pass
+        
+        # Verify no changes were made
+        products = db_operations.execute_query("SELECT * FROM test_products")
+        assert len(products) == 3
+    
+    def test_delete_with_related_data(self, db_operations):
+        """Test delete operations with related data."""
+        # First soft delete a product
+        db_operations.soft_delete("test_products", 1)
+        
+        # Verify orders still exist
+        orders = db_operations.execute_query("SELECT * FROM test_orders WHERE product_id = 1")
+        assert len(orders) == 2
+        
+        # Then perform cascade delete
+        cascade_config = [
+            {"table": "test_orders", "foreign_key": "product_id", "cascade_type": "delete"}
+        ]
+        results = db_operations.cascade_delete("test_products", 1, cascade_config)
+        
+        # Verify all related data is deleted
+        products = db_operations.execute_query("SELECT * FROM test_products WHERE id = 1")
+        orders = db_operations.execute_query("SELECT * FROM test_orders WHERE product_id = 1")
+        assert len(products) == 0
+        assert len(orders) == 0 

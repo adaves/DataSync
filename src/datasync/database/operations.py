@@ -11,6 +11,10 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional, Union
 import logging
 
+class DatabaseError(Exception):
+    """Custom exception for database operations."""
+    pass
+
 class DatabaseOperations:
     """Handles core database operations for Microsoft Access databases."""
     
@@ -864,3 +868,209 @@ class DatabaseOperations:
             self.logger.error(f"Error updating records in {table_name}: {e}")
             self.conn.rollback()
             raise 
+
+    def delete_records(self, table_name: str, conditions: Dict[str, Any] = None) -> int:
+        """
+        Delete records from a table based on conditions.
+        
+        Args:
+            table_name (str): Name of the table to delete from
+            conditions (Dict[str, Any], optional): Conditions for deletion
+            
+        Returns:
+            int: Number of records deleted
+            
+        Example:
+            >>> db.delete_records("products", {"category": "discontinued"})
+            5  # 5 records deleted
+        """
+        try:
+            if not self.conn:
+                self.connect()
+            
+            # Build the DELETE query
+            query = f"DELETE FROM [{table_name}]"
+            params = []
+            
+            if conditions:
+                where_clause = " AND ".join([f"[{k}] = ?" for k in conditions.keys()])
+                query += f" WHERE {where_clause}"
+                params.extend(conditions.values())
+            
+            # Execute the query
+            self.cursor.execute(query, params)
+            self.conn.commit()
+            
+            return self.cursor.rowcount
+            
+        except Exception as e:
+            if self.conn:
+                self.conn.rollback()
+            raise DatabaseError(f"Error deleting records: {str(e)}")
+    
+    def soft_delete(self, table_name: str, record_id: Any, id_column: str = "id") -> bool:
+        """
+        Perform a soft delete by setting a deleted flag instead of removing the record.
+        
+        Args:
+            table_name (str): Name of the table
+            record_id (Any): ID of the record to soft delete
+            id_column (str, optional): Name of the ID column. Defaults to "id".
+            
+        Returns:
+            bool: True if the record was soft deleted, False otherwise
+            
+        Example:
+            >>> db.soft_delete("products", 123)
+            True
+        """
+        try:
+            if not self.conn:
+                self.connect()
+            
+            # Check if the table has a deleted_at column
+            columns = self.get_table_columns(table_name)
+            if "deleted_at" not in columns:
+                raise DatabaseError(f"Table {table_name} does not support soft delete")
+            
+            # Update the deleted_at timestamp
+            query = f"""
+                UPDATE [{table_name}]
+                SET deleted_at = ?
+                WHERE [{id_column}] = ? AND deleted_at IS NULL
+            """
+            self.cursor.execute(query, (datetime.now(), record_id))
+            self.conn.commit()
+            
+            return self.cursor.rowcount > 0
+            
+        except Exception as e:
+            if self.conn:
+                self.conn.rollback()
+            raise DatabaseError(f"Error performing soft delete: {str(e)}")
+    
+    def cascade_delete(self, table_name: str, record_id: Any, 
+                      cascade_tables: List[Dict[str, Any]], 
+                      id_column: str = "id") -> Dict[str, int]:
+        """
+        Delete a record and all related records in cascade tables.
+        
+        Args:
+            table_name (str): Name of the main table
+            record_id (Any): ID of the record to delete
+            cascade_tables (List[Dict[str, Any]]): List of cascade table configurations
+                Each dict should contain:
+                - table: Name of the cascade table
+                - foreign_key: Name of the foreign key column
+                - cascade_type: "delete" or "nullify"
+            id_column (str, optional): Name of the ID column. Defaults to "id".
+            
+        Returns:
+            Dict[str, int]: Number of records deleted in each table
+            
+        Example:
+            >>> cascade_config = [
+            ...     {"table": "order_items", "foreign_key": "product_id", "cascade_type": "delete"},
+            ...     {"table": "product_reviews", "foreign_key": "product_id", "cascade_type": "nullify"}
+            ... ]
+            >>> db.cascade_delete("products", 123, cascade_config)
+            {"products": 1, "order_items": 5, "product_reviews": 3}
+        """
+        try:
+            if not self.conn:
+                self.connect()
+            
+            self.begin_transaction()
+            results = {}
+            
+            try:
+                # Process each cascade table
+                for cascade in cascade_tables:
+                    cascade_table = cascade["table"]
+                    foreign_key = cascade["foreign_key"]
+                    cascade_type = cascade["cascade_type"]
+                    
+                    if cascade_type == "delete":
+                        # Delete related records
+                        query = f"""
+                            DELETE FROM [{cascade_table}]
+                            WHERE [{foreign_key}] = ?
+                        """
+                        self.cursor.execute(query, (record_id,))
+                        results[cascade_table] = self.cursor.rowcount
+                    elif cascade_type == "nullify":
+                        # Set foreign key to NULL
+                        query = f"""
+                            UPDATE [{cascade_table}]
+                            SET [{foreign_key}] = NULL
+                            WHERE [{foreign_key}] = ?
+                        """
+                        self.cursor.execute(query, (record_id,))
+                        results[cascade_table] = self.cursor.rowcount
+                
+                # Delete the main record
+                query = f"""
+                    DELETE FROM [{table_name}]
+                    WHERE [{id_column}] = ?
+                """
+                self.cursor.execute(query, (record_id,))
+                results[table_name] = self.cursor.rowcount
+                
+                self.commit_transaction()
+                return results
+                
+            except Exception as e:
+                self.rollback_transaction()
+                raise DatabaseError(f"Error during cascade delete: {str(e)}")
+            
+        except Exception as e:
+            if self.conn:
+                self.conn.rollback()
+            raise DatabaseError(f"Error performing cascade delete: {str(e)}")
+    
+    def delete_with_transaction(self, table_name: str, conditions: Dict[str, Any] = None) -> int:
+        """
+        Delete records within a transaction, with rollback on error.
+        
+        Args:
+            table_name (str): Name of the table to delete from
+            conditions (Dict[str, Any], optional): Conditions for deletion
+            
+        Returns:
+            int: Number of records deleted
+            
+        Example:
+            >>> db.delete_with_transaction("orders", {"status": "cancelled"})
+            3  # 3 records deleted
+        """
+        try:
+            if not self.conn:
+                self.connect()
+            
+            self.begin_transaction()
+            
+            try:
+                # Build the DELETE query
+                query = f"DELETE FROM [{table_name}]"
+                params = []
+                
+                if conditions:
+                    where_clause = " AND ".join([f"[{k}] = ?" for k in conditions.keys()])
+                    query += f" WHERE {where_clause}"
+                    params.extend(conditions.values())
+                
+                # Execute the query
+                self.cursor.execute(query, params)
+                affected_rows = self.cursor.rowcount
+                
+                self.commit_transaction()
+                return affected_rows
+                
+            except Exception as e:
+                self.rollback_transaction()
+                raise DatabaseError(f"Error during delete transaction: {str(e)}")
+            
+        except Exception as e:
+            if self.conn:
+                self.conn.rollback()
+            raise DatabaseError(f"Error performing delete with transaction: {str(e)}") 

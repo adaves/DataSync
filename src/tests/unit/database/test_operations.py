@@ -695,4 +695,159 @@ class TestDatabaseOperations:
             assert results[0]["value"] == 10.0
             
         finally:
-            db_operations.execute_query("DROP TABLE test_update_transaction") 
+            db_operations.execute_query("DROP TABLE test_update_transaction")
+
+    def test_delete_records(self, db_operations, temp_db_path):
+        """Test basic delete operation with conditions."""
+        # Create test table
+        db_operations.execute_query("""
+            CREATE TABLE test_delete (
+                id INTEGER PRIMARY KEY,
+                name TEXT,
+                status TEXT
+            )
+        """)
+        
+        # Insert test data
+        db_operations.execute_query("""
+            INSERT INTO test_delete (id, name, status)
+            VALUES (1, 'Test1', 'active'),
+                   (2, 'Test2', 'inactive'),
+                   (3, 'Test3', 'active')
+        """)
+        
+        # Delete records with condition
+        deleted_count = db_operations.delete_records("test_delete", {"status": "inactive"})
+        assert deleted_count == 1
+        
+        # Verify remaining records
+        result = db_operations.execute_query("SELECT * FROM test_delete")
+        assert len(result) == 2
+        assert all(record["status"] == "active" for record in result)
+
+    def test_soft_delete(self, db_operations, temp_db_path):
+        """Test soft delete functionality."""
+        # Create test table with deleted_at column
+        db_operations.execute_query("""
+            CREATE TABLE test_soft_delete (
+                id INTEGER PRIMARY KEY,
+                name TEXT,
+                deleted_at DATETIME
+            )
+        """)
+        
+        # Insert test data
+        db_operations.execute_query("""
+            INSERT INTO test_soft_delete (id, name)
+            VALUES (1, 'Test1'),
+                   (2, 'Test2')
+        """)
+        
+        # Perform soft delete
+        success = db_operations.soft_delete("test_soft_delete", 1)
+        assert success is True
+        
+        # Verify record is marked as deleted
+        result = db_operations.execute_query("SELECT * FROM test_soft_delete WHERE id = 1")
+        assert len(result) == 1
+        assert result[0]["deleted_at"] is not None
+
+    def test_cascade_delete(self, db_operations, temp_db_path):
+        """Test cascade delete functionality."""
+        # Create parent and child tables
+        db_operations.execute_query("""
+            CREATE TABLE test_parent (
+                id INTEGER PRIMARY KEY,
+                name TEXT
+            )
+        """)
+        
+        db_operations.execute_query("""
+            CREATE TABLE test_child (
+                id INTEGER PRIMARY KEY,
+                parent_id INTEGER,
+                name TEXT,
+                FOREIGN KEY (parent_id) REFERENCES test_parent(id)
+            )
+        """)
+        
+        # Insert test data
+        db_operations.execute_query("""
+            INSERT INTO test_parent (id, name)
+            VALUES (1, 'Parent1')
+        """)
+        
+        db_operations.execute_query("""
+            INSERT INTO test_child (id, parent_id, name)
+            VALUES (1, 1, 'Child1'),
+                   (2, 1, 'Child2')
+        """)
+        
+        # Configure cascade delete
+        cascade_config = [
+            {"table": "test_child", "foreign_key": "parent_id", "cascade_type": "delete"}
+        ]
+        
+        # Perform cascade delete
+        results = db_operations.cascade_delete("test_parent", 1, cascade_config)
+        assert results["test_parent"] == 1
+        assert results["test_child"] == 2
+        
+        # Verify records are deleted
+        parent_count = db_operations.execute_query("SELECT COUNT(*) as count FROM test_parent")[0]["count"]
+        child_count = db_operations.execute_query("SELECT COUNT(*) as count FROM test_child")[0]["count"]
+        assert parent_count == 0
+        assert child_count == 0
+
+    def test_delete_with_transaction(self, db_operations, temp_db_path):
+        """Test delete operation within a transaction."""
+        # Create test table
+        db_operations.execute_query("""
+            CREATE TABLE test_transaction (
+                id INTEGER PRIMARY KEY,
+                name TEXT
+            )
+        """)
+        
+        # Insert test data
+        db_operations.execute_query("""
+            INSERT INTO test_transaction (id, name)
+            VALUES (1, 'Test1'),
+                   (2, 'Test2')
+        """)
+        
+        # Perform delete within transaction
+        deleted_count = db_operations.delete_with_transaction("test_transaction", {"id": 1})
+        assert deleted_count == 1
+        
+        # Verify record is deleted
+        result = db_operations.execute_query("SELECT * FROM test_transaction")
+        assert len(result) == 1
+        assert result[0]["id"] == 2
+
+    def test_delete_transaction_rollback(self, db_operations, temp_db_path):
+        """Test transaction rollback during delete operation."""
+        # Create test table
+        db_operations.execute_query("""
+            CREATE TABLE test_rollback (
+                id INTEGER PRIMARY KEY,
+                name TEXT
+            )
+        """)
+        
+        # Insert test data
+        db_operations.execute_query("""
+            INSERT INTO test_rollback (id, name)
+            VALUES (1, 'Test1')
+        """)
+        
+        # Attempt delete with invalid condition to force rollback
+        try:
+            db_operations.delete_with_transaction("test_rollback", {"invalid_column": "value"})
+        except Exception:
+            pass
+        
+        # Verify record still exists after rollback
+        result = db_operations.execute_query("SELECT * FROM test_rollback")
+        assert len(result) == 1
+        assert result[0]["id"] == 1 
