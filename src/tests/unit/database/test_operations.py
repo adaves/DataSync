@@ -127,4 +127,136 @@ class TestDatabaseOperations:
         )
         
         deleted = db_operations.delete_year_data("test_table", 2023)
-        assert deleted == 10 
+        assert deleted == 10
+
+    def test_insert_record(self, db_operations, mocker):
+        """Test inserting a single record."""
+        # Mock the cursor and its methods
+        mock_cursor = mocker.MagicMock()
+        mock_cursor.rowcount = 1
+        db_operations.cursor = mock_cursor
+        db_operations.conn = mocker.MagicMock()
+        
+        # Test data
+        record = {
+            "id": 1,
+            "name": "Test Record",
+            "value": 42
+        }
+        
+        result = db_operations.insert_record("test_table", record)
+        assert result == 1
+        mock_cursor.execute.assert_called_once()
+        db_operations.conn.commit.assert_called_once()
+
+    def test_insert_record_error(self, db_operations, mocker):
+        """Test error handling in insert_record."""
+        # Mock the cursor to raise an error
+        mock_cursor = mocker.MagicMock()
+        mock_cursor.execute.side_effect = Exception("Test error")
+        db_operations.cursor = mock_cursor
+        db_operations.conn = mocker.MagicMock()
+        
+        with pytest.raises(Exception):
+            db_operations.insert_record("test_table", {"id": 1})
+        db_operations.conn.rollback.assert_called_once()
+
+    def test_batch_insert(self, db_operations, mocker):
+        """Test batch insert functionality."""
+        # Mock necessary methods
+        mock_cursor = mocker.MagicMock()
+        db_operations.cursor = mock_cursor
+        db_operations.conn = mocker.MagicMock()
+        mocker.patch.object(
+            db_operations,
+            'execute_query',
+            return_value=1
+        )
+        
+        # Test data
+        records = [
+            {"id": 1, "name": "Test1"},
+            {"id": 2, "name": "Test2"},
+            {"id": 3, "name": "Test3"}
+        ]
+        
+        result = db_operations.batch_insert("test_table", records, batch_size=2)
+        assert result == 3
+        assert mock_cursor.executemany.call_count == 2  # Two batches of 2 and 1 records
+
+    def test_batch_insert_empty(self, db_operations):
+        """Test batch insert with empty records list."""
+        result = db_operations.batch_insert("test_table", [])
+        assert result == 0
+
+    def test_upsert_insert(self, db_operations, mocker):
+        """Test upsert when record doesn't exist (insert case)."""
+        # Mock execute_query to return no existing records
+        mocker.patch.object(
+            db_operations,
+            'execute_query',
+            return_value=[{'count': 0}]
+        )
+        # Mock insert_record
+        mocker.patch.object(
+            db_operations,
+            'insert_record',
+            return_value=1
+        )
+        
+        record = {"id": 1, "name": "Test"}
+        result = db_operations.upsert("test_table", record, ["id"])
+        assert result == 1
+        db_operations.insert_record.assert_called_once_with("test_table", record)
+
+    def test_upsert_update(self, db_operations, mocker):
+        """Test upsert when record exists (update case)."""
+        # Mock execute_query to return existing record
+        mocker.patch.object(
+            db_operations,
+            'execute_query',
+            return_value=[{'count': 1}]
+        )
+        
+        # Mock cursor
+        mock_cursor = mocker.MagicMock()
+        mock_cursor.rowcount = 1
+        db_operations.cursor = mock_cursor
+        db_operations.conn = mocker.MagicMock()
+        
+        record = {"id": 1, "name": "Updated"}
+        result = db_operations.upsert("test_table", record, ["id"])
+        assert result == 1
+        mock_cursor.execute.assert_called_once()
+        db_operations.conn.commit.assert_called_once()
+
+    def test_transaction_management(self, db_operations, mocker):
+        """Test transaction management methods."""
+        # Mock connection
+        mock_conn = mocker.MagicMock()
+        db_operations.conn = mock_conn
+        
+        # Test begin_transaction
+        db_operations.begin_transaction()
+        assert mock_conn.autocommit is False
+        
+        # Test commit_transaction
+        db_operations.commit_transaction()
+        mock_conn.commit.assert_called_once()
+        assert mock_conn.autocommit is True
+        
+        # Test rollback_transaction
+        db_operations.rollback_transaction()
+        mock_conn.rollback.assert_called_once()
+        assert mock_conn.autocommit is True
+
+    def test_transaction_error_handling(self, db_operations, mocker):
+        """Test transaction error handling."""
+        # Mock connection to raise error
+        mock_conn = mocker.MagicMock()
+        mock_conn.commit.side_effect = Exception("Commit error")
+        db_operations.conn = mock_conn
+        
+        with pytest.raises(Exception):
+            db_operations.commit_transaction()
+        assert mock_conn.autocommit is True 

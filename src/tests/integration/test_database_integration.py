@@ -202,4 +202,190 @@ class TestDatabaseIntegration:
             
         finally:
             if db_operations.conn:
+                db_operations.close()
+
+    def test_insert_record_integration(self, db_operations):
+        """Test insert_record with a real database."""
+        try:
+            db_operations.connect()
+            
+            # Create a test table
+            create_table_sql = """
+            CREATE TABLE TestInsert (
+                ID COUNTER PRIMARY KEY,
+                Name TEXT(50),
+                Value DOUBLE,
+                CreatedDate DATETIME
+            )
+            """
+            db_operations.execute_query(create_table_sql)
+            
+            # Test single record insertion
+            record = {
+                "Name": "Test Insert",
+                "Value": 42.5,
+                "CreatedDate": datetime.now()
+            }
+            
+            result = db_operations.insert_record("TestInsert", record)
+            assert result == 1
+            
+            # Verify the record was inserted
+            results = db_operations.execute_query("SELECT * FROM TestInsert")
+            assert len(results) == 1
+            assert results[0]["Name"] == "Test Insert"
+            assert results[0]["Value"] == 42.5
+            
+        finally:
+            if db_operations.conn:
+                db_operations.execute_query("DROP TABLE TestInsert")
+                db_operations.close()
+
+    def test_batch_insert_integration(self, db_operations):
+        """Test batch_insert with a real database."""
+        try:
+            db_operations.connect()
+            
+            # Create a test table
+            create_table_sql = """
+            CREATE TABLE TestBatchInsert (
+                ID COUNTER PRIMARY KEY,
+                Name TEXT(50),
+                Value DOUBLE,
+                CreatedDate DATETIME
+            )
+            """
+            db_operations.execute_query(create_table_sql)
+            
+            # Prepare test data
+            records = [
+                {
+                    "Name": f"Test {i}",
+                    "Value": float(i),
+                    "CreatedDate": datetime.now()
+                }
+                for i in range(1, 6)  # 5 records
+            ]
+            
+            # Test batch insertion
+            result = db_operations.batch_insert("TestBatchInsert", records, batch_size=2)
+            assert result == 5
+            
+            # Verify all records were inserted
+            results = db_operations.execute_query("SELECT * FROM TestBatchInsert ORDER BY ID")
+            assert len(results) == 5
+            for i, record in enumerate(results, 1):
+                assert record["Name"] == f"Test {i}"
+                assert record["Value"] == float(i)
+            
+        finally:
+            if db_operations.conn:
+                db_operations.execute_query("DROP TABLE TestBatchInsert")
+                db_operations.close()
+
+    def test_upsert_integration(self, db_operations):
+        """Test upsert with a real database."""
+        try:
+            db_operations.connect()
+            
+            # Create a test table with a unique constraint
+            create_table_sql = """
+            CREATE TABLE TestUpsert (
+                ID COUNTER PRIMARY KEY,
+                Name TEXT(50) UNIQUE,
+                Value DOUBLE,
+                CreatedDate DATETIME
+            )
+            """
+            db_operations.execute_query(create_table_sql)
+            
+            # Test initial insert
+            record = {
+                "Name": "Test Upsert",
+                "Value": 42.5,
+                "CreatedDate": datetime.now()
+            }
+            
+            result = db_operations.upsert("TestUpsert", record, ["Name"])
+            assert result == 1
+            
+            # Verify initial insert
+            results = db_operations.execute_query("SELECT * FROM TestUpsert")
+            assert len(results) == 1
+            assert results[0]["Value"] == 42.5
+            
+            # Test update
+            updated_record = {
+                "Name": "Test Upsert",  # Same name to trigger update
+                "Value": 99.9,          # Different value
+                "CreatedDate": datetime.now()
+            }
+            
+            result = db_operations.upsert("TestUpsert", updated_record, ["Name"])
+            assert result == 1
+            
+            # Verify update
+            results = db_operations.execute_query("SELECT * FROM TestUpsert")
+            assert len(results) == 1
+            assert results[0]["Value"] == 99.9
+            
+        finally:
+            if db_operations.conn:
+                db_operations.execute_query("DROP TABLE TestUpsert")
+                db_operations.close()
+
+    def test_transaction_integration(self, db_operations):
+        """Test transaction management with a real database."""
+        try:
+            db_operations.connect()
+            
+            # Create a test table
+            create_table_sql = """
+            CREATE TABLE TestTransactions (
+                ID COUNTER PRIMARY KEY,
+                Name TEXT(50),
+                Value DOUBLE
+            )
+            """
+            db_operations.execute_query(create_table_sql)
+            
+            # Test transaction rollback
+            db_operations.begin_transaction()
+            
+            # Insert a record
+            record = {
+                "Name": "Test Transaction",
+                "Value": 42.5
+            }
+            db_operations.insert_record("TestTransactions", record)
+            
+            # Verify record exists before rollback
+            results = db_operations.execute_query("SELECT * FROM TestTransactions")
+            assert len(results) == 1
+            
+            # Rollback the transaction
+            db_operations.rollback_transaction()
+            
+            # Verify record was rolled back
+            results = db_operations.execute_query("SELECT * FROM TestTransactions")
+            assert len(results) == 0
+            
+            # Test successful transaction
+            db_operations.begin_transaction()
+            
+            # Insert a record
+            db_operations.insert_record("TestTransactions", record)
+            
+            # Commit the transaction
+            db_operations.commit_transaction()
+            
+            # Verify record exists after commit
+            results = db_operations.execute_query("SELECT * FROM TestTransactions")
+            assert len(results) == 1
+            assert results[0]["Name"] == "Test Transaction"
+            assert results[0]["Value"] == 42.5
+            
+        finally:
+            if db_operations.conn:
+                db_operations.execute_query("DROP TABLE TestTransactions")
                 db_operations.close() 

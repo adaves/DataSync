@@ -62,11 +62,11 @@ Feature Implementation Groups
 2. Create Operations Implementation
 --------------------------------
 [ ] Core Files:
-    - [ ] Add to src/database/operations.py:
-        - [ ] insert_record method
-        - [ ] batch_insert functionality
-        - [ ] upsert functionality
-        - [ ] transaction support for inserts
+    - [x] Add to src/database/operations.py:
+        - [x] insert_record method
+        - [x] batch_insert functionality
+        - [x] upsert functionality
+        - [x] transaction support for inserts
 
 [ ] Validation:
     - [x] Add to src/database/validation.py:
@@ -75,14 +75,14 @@ Feature Implementation Groups
         - [x] Required field validation
 
 [ ] Unit Tests:
-    - [ ] Add to test_operations.py:
-        - [ ] Test insert_record
-        - [ ] Test batch_insert
-        - [ ] Test upsert
-        - [ ] Test transaction rollback
+    - [x] Add to test_operations.py:
+        - [x] Test insert_record
+        - [x] Test batch_insert
+        - [x] Test upsert
+        - [x] Test transaction rollback
 
 [ ] Integration Tests:
-    - [ ] Add create operation tests to test_database_integration.py
+    - [x] Add create operation tests to test_database_integration.py
 
 3. Read Operations Implementation
 ------------------------------
