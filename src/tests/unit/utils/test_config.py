@@ -12,22 +12,29 @@ import os
 @pytest.fixture
 def temp_config():
     """Create a temporary configuration file."""
-    with tempfile.NamedTemporaryFile(suffix='.yaml', delete=False) as tmp:
-        config = {
-            'database': {
-                'driver': 'test_driver',
-                'connection': {
-                    'timeout': 10
-                }
-            },
-            'sync': {
-                'batch': {
-                    'size': 100
-                }
+    config = {
+        'database': {
+            'driver': 'test_driver',
+            'connection': {
+                'timeout': 10
+            }
+        },
+        'sync': {
+            'batch': {
+                'size': 100
             }
         }
-        yaml.dump(config, tmp)
-        return tmp.name
+    }
+    
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.yaml', delete=False) as tmp:
+        yaml.dump(config, tmp, default_flow_style=False)
+        tmp_path = tmp.name
+    
+    yield tmp_path
+    
+    # Cleanup after test
+    if os.path.exists(tmp_path):
+        os.unlink(tmp_path)
 
 @pytest.fixture
 def config_manager(temp_config):
@@ -82,9 +89,4 @@ def test_default_config():
     """Test using default configuration when no file exists."""
     manager = ConfigManager('non_existent_file.yaml')
     assert manager.get('database.driver') == "Microsoft Access Driver (*.mdb, *.accdb)"
-    assert manager.get('database.connection.timeout') == 30
-
-def test_cleanup(temp_config):
-    """Clean up temporary files after tests."""
-    if os.path.exists(temp_config):
-        os.unlink(temp_config) 
+    assert manager.get('database.connection.timeout') == 30 

@@ -9,11 +9,14 @@ from datasync.database.operations import DatabaseOperations
 from datasync.database.validation import DatabaseValidation
 from datasync.database.monitoring import DatabaseMonitor
 import pyodbc
+from tests.fixtures.mock_database.create_mock_db import create_mock_database
 
 @pytest.fixture
 def mock_db_path(tmp_path):
     """Create a temporary database path for testing."""
-    return tmp_path / "test_database.accdb"
+    db_path = tmp_path / "test_database.accdb"
+    create_mock_database(str(db_path))
+    return db_path
 
 @pytest.fixture
 def db_operations(mock_db_path):

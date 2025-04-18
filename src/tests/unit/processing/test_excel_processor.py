@@ -6,7 +6,7 @@ import pytest
 import pandas as pd
 import os
 from pathlib import Path
-from src.processing.excel_processor import ExcelProcessor
+from datasync.processing.excel_processor import ExcelProcessor
 
 @pytest.fixture
 def sample_excel_file(tmp_path):

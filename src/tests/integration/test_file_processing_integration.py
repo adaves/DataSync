@@ -6,9 +6,9 @@ import pytest
 import pandas as pd
 import os
 from pathlib import Path
-from src.datasync.processing.excel_processor import ExcelProcessor
-from src.datasync.processing.file_manager import FileManager
-from src.datasync.processing.validation import ExcelValidator
+from datasync.processing.excel_processor import ExcelProcessor
+from datasync.processing.file_manager import FileManager
+from datasync.processing.validation import ExcelValidator
 
 @pytest.fixture
 def test_data_dir(tmp_path):

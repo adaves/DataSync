@@ -1,8 +1,12 @@
+"""
+Unit tests for logging functionality.
+"""
+
 import pytest
 import logging
 import os
 from pathlib import Path
-from src.datasync.utils.logging import setup_logging, get_logger
+from datasync.utils.logging import setup_logging, get_logger
 
 class TestLogging:
     """Test cases for logging functionality."""

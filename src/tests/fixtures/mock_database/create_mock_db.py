@@ -6,6 +6,7 @@ import pyodbc
 import pandas as pd
 from pathlib import Path
 import os
+import win32com.client
 
 def create_mock_database(db_path: str):
     """
@@ -17,14 +18,17 @@ def create_mock_database(db_path: str):
     # Ensure the directory exists
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     
-    # Create connection string
-    conn_str = (
-        r'DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};'
-        f'DBQ={db_path};'
-    )
-    
     try:
-        # Create the database
+        # Create the database using ADOX
+        cat = win32com.client.Dispatch("ADOX.Catalog")
+        cat.Create(f"Provider=Microsoft.ACE.OLEDB.12.0;Data Source={db_path};")
+        cat = None
+        
+        # Now connect to the created database
+        conn_str = (
+            r'DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};'
+            f'DBQ={db_path};'
+        )
         conn = pyodbc.connect(conn_str)
         cursor = conn.cursor()
         
