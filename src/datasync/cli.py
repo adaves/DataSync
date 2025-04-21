@@ -5,6 +5,7 @@ including commands for synchronization, validation, and monitoring.
 """
 
 import click
+import sys
 from typing import Optional
 from pathlib import Path
 from datasync.database.operations import DatabaseOperations
@@ -105,10 +106,12 @@ def sync(source: str, destination: str, validate: bool, monitor: bool, batch_siz
             dest_db.close()
         
         click.echo("\nSynchronization completed successfully")
+        sys.exit(0)
         
     except Exception as e:
         logger.error(f"Error during synchronization: {e}")
-        raise click.ClickException(str(e))
+        click.echo(f"Error: {str(e)}", err=True)
+        sys.exit(1)
 
 @cli.command()
 @click.argument('database', type=click.Path(exists=True))
@@ -164,10 +167,12 @@ def validate(database: str, table: Optional[str], output: Optional[str], year: i
         
         db_ops.close()
         click.echo("\nValidation completed successfully")
+        sys.exit(0)
         
     except Exception as e:
         logger.error(f"Error during validation: {e}")
-        raise click.ClickException(str(e))
+        click.echo(f"Error: {str(e)}", err=True)
+        sys.exit(1)
 
 @cli.command()
 @click.argument('database', type=click.Path(exists=True))
@@ -225,10 +230,12 @@ def monitor(database: str, interval: int, output: Optional[str], duration: int):
         
         db_ops.close()
         click.echo("\nMonitoring completed")
+        sys.exit(0)
         
     except Exception as e:
         logger.error(f"Error during monitoring: {e}")
-        raise click.ClickException(str(e))
+        click.echo(f"Error: {str(e)}", err=True)
+        sys.exit(1)
 
 if __name__ == '__main__':
     cli() 

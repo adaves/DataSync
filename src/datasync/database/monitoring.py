@@ -10,17 +10,33 @@ import time
 from datetime import datetime
 from dataclasses import dataclass
 from collections import defaultdict
+import json
+import os
 
 @dataclass
 class OperationMetrics:
     """Metrics for a single database operation."""
-    operation_type: str
+    operation_name: str
     start_time: float
     end_time: float
-    success: bool
-    error_message: Optional[str] = None
-    affected_rows: int = 0
-    query: Optional[str] = None
+    duration: float
+    error_count: int = 0
+    last_error: Optional[str] = None
+    exceeded_threshold: bool = False
+    threshold_duration: Optional[float] = None
+    timed_out: bool = False
+    timeout_duration: Optional[float] = None
+    category: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+@dataclass
+class AggregatedMetrics:
+    """Aggregated metrics for a set of operations."""
+    operation_count: int
+    average_duration: float
+    total_duration: float
+    error_count: int
+    category: Optional[str] = None
 
 class DatabaseMonitor:
     """Handles monitoring of database operations and performance metrics."""
@@ -33,146 +49,216 @@ class DatabaseMonitor:
             logger: Optional logger instance for monitoring logging
         """
         self.logger = logger or logging.getLogger(__name__)
-        self.operation_history: List[OperationMetrics] = []
-        self.error_counts = defaultdict(int)
-        self.operation_times = defaultdict(list)
+        self.operations: Dict[str, OperationMetrics] = {}
+        self.performance_thresholds: Dict[str, float] = {}
+        self.operation_timeouts: Dict[str, float] = {}
+        self.metrics_file = "metrics.json"
     
-    def start_operation(self, operation_type: str, query: Optional[str] = None) -> OperationMetrics:
+    def start_operation(self, operation_name: str, category: Optional[str] = None,
+                       metadata: Optional[Dict[str, Any]] = None) -> str:
         """
         Start tracking a new database operation.
         
         Args:
-            operation_type: Type of operation (e.g., 'SELECT', 'INSERT', 'UPDATE')
-            query: Optional SQL query being executed
+            operation_name: Name of the operation
+            category: Optional category for the operation
+            metadata: Optional additional metadata
             
         Returns:
-            OperationMetrics object to track the operation
+            Operation ID
         """
-        metrics = OperationMetrics(
-            operation_type=operation_type,
+        operation_id = f"{operation_name}_{len(self.operations)}"
+        self.operations[operation_id] = OperationMetrics(
+            operation_name=operation_name,
             start_time=time.time(),
             end_time=0.0,
-            success=False,
-            query=query
+            duration=0.0,
+            category=category,
+            metadata=metadata
         )
-        return metrics
+        return operation_id
     
-    def end_operation(self, metrics: OperationMetrics, success: bool, 
-                     error_message: Optional[str] = None, 
-                     affected_rows: int = 0) -> None:
+    def end_operation(self, operation_id: str) -> OperationMetrics:
         """
         Complete tracking of a database operation.
         
         Args:
-            metrics: OperationMetrics object to update
-            success: Whether the operation succeeded
-            error_message: Optional error message if operation failed
-            affected_rows: Number of rows affected by the operation
-        """
-        metrics.end_time = time.time()
-        metrics.success = success
-        metrics.error_message = error_message
-        metrics.affected_rows = affected_rows
-        
-        self.operation_history.append(metrics)
-        
-        if not success and error_message:
-            self.error_counts[error_message] += 1
-        
-        self.operation_times[metrics.operation_type].append(
-            metrics.end_time - metrics.start_time
-        )
-    
-    def get_operation_stats(self, operation_type: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Get statistics for database operations.
-        
-        Args:
-            operation_type: Optional filter for specific operation type
+            operation_id: ID of the operation to end
             
         Returns:
-            Dictionary containing operation statistics
+            OperationMetrics object
         """
-        if operation_type:
-            operations = [op for op in self.operation_history 
-                         if op.operation_type == operation_type]
-        else:
-            operations = self.operation_history
+        if operation_id not in self.operations:
+            raise ValueError(f"Unknown operation ID: {operation_id}")
         
-        if not operations:
-            return {}
+        metrics = self.operations[operation_id]
+        metrics.end_time = time.time()
+        metrics.duration = metrics.end_time - metrics.start_time
         
-        total_time = sum(op.end_time - op.start_time for op in operations)
-        success_count = sum(1 for op in operations if op.success)
-        total_rows = sum(op.affected_rows for op in operations)
+        # Check performance threshold
+        if metrics.operation_name in self.performance_thresholds:
+            threshold = self.performance_thresholds[metrics.operation_name]
+            if metrics.duration > threshold:
+                metrics.exceeded_threshold = True
+                metrics.threshold_duration = threshold
         
-        return {
-            'total_operations': len(operations),
-            'successful_operations': success_count,
-            'failed_operations': len(operations) - success_count,
-            'total_time_seconds': total_time,
-            'average_time_seconds': total_time / len(operations),
-            'total_rows_affected': total_rows,
-            'average_rows_affected': total_rows / len(operations) if operations else 0
-        }
+        # Check timeout
+        if metrics.operation_name in self.operation_timeouts:
+            timeout = self.operation_timeouts[metrics.operation_name]
+            if metrics.duration > timeout:
+                metrics.timed_out = True
+                metrics.timeout_duration = timeout
+        
+        return metrics
     
-    def get_error_summary(self) -> Dict[str, int]:
+    def record_error(self, operation_id: str, error: Exception) -> None:
         """
-        Get summary of error counts by error message.
-        
-        Returns:
-            Dictionary mapping error messages to their counts
-        """
-        return dict(self.error_counts)
-    
-    def get_performance_report(self) -> Dict[str, Any]:
-        """
-        Generate a comprehensive performance report.
-        
-        Returns:
-            Dictionary containing performance metrics and statistics
-        """
-        report = {
-            'timestamp': datetime.now().isoformat(),
-            'total_operations': len(self.operation_history),
-            'operation_types': {},
-            'error_summary': self.get_error_summary()
-        }
-        
-        # Calculate statistics for each operation type
-        for op_type in set(op.operation_type for op in self.operation_history):
-            report['operation_types'][op_type] = self.get_operation_stats(op_type)
-        
-        return report
-    
-    def clear_history(self) -> None:
-        """Clear all stored operation history and metrics."""
-        self.operation_history.clear()
-        self.error_counts.clear()
-        self.operation_times.clear()
-    
-    def log_operation(self, metrics: OperationMetrics) -> None:
-        """
-        Log details of a completed operation.
+        Record an error for an operation.
         
         Args:
-            metrics: OperationMetrics object containing operation details
+            operation_id: ID of the operation
+            error: Exception that occurred
         """
-        duration = metrics.end_time - metrics.start_time
-        log_msg = (
-            f"Operation: {metrics.operation_type}, "
-            f"Duration: {duration:.3f}s, "
-            f"Success: {metrics.success}, "
-            f"Rows affected: {metrics.affected_rows}"
+        if operation_id not in self.operations:
+            raise ValueError(f"Unknown operation ID: {operation_id}")
+        
+        metrics = self.operations[operation_id]
+        metrics.error_count += 1
+        metrics.last_error = str(error)
+    
+    def set_performance_threshold(self, operation_name: str, threshold: float) -> None:
+        """
+        Set performance threshold for an operation.
+        
+        Args:
+            operation_name: Name of the operation
+            threshold: Threshold in seconds
+        """
+        self.performance_thresholds[operation_name] = threshold
+    
+    def set_operation_timeout(self, operation_name: str, timeout: float) -> None:
+        """
+        Set operation timeout.
+        
+        Args:
+            operation_name: Name of the operation
+            timeout: Timeout in seconds
+        """
+        self.operation_timeouts[operation_name] = timeout
+    
+    def get_concurrent_operation_count(self) -> int:
+        """
+        Get number of concurrent operations.
+        
+        Returns:
+            Number of concurrent operations
+        """
+        return sum(1 for metrics in self.operations.values() 
+                  if metrics.end_time == 0.0)
+    
+    def get_aggregated_metrics(self, operation_name: str) -> AggregatedMetrics:
+        """
+        Get aggregated metrics for an operation type.
+        
+        Args:
+            operation_name: Name of the operation
+            
+        Returns:
+            AggregatedMetrics object
+        """
+        operations = [m for m in self.operations.values() 
+                     if m.operation_name == operation_name]
+        
+        if not operations:
+            return AggregatedMetrics(0, 0.0, 0.0, 0)
+        
+        total_duration = sum(m.duration for m in operations)
+        error_count = sum(m.error_count for m in operations)
+        
+        return AggregatedMetrics(
+            operation_count=len(operations),
+            average_duration=total_duration / len(operations),
+            total_duration=total_duration,
+            error_count=error_count
         )
+    
+    def get_category_metrics(self, category: str) -> AggregatedMetrics:
+        """
+        Get aggregated metrics for a category.
         
-        if metrics.query:
-            log_msg += f", Query: {metrics.query}"
+        Args:
+            category: Category name
+            
+        Returns:
+            AggregatedMetrics object
+        """
+        operations = [m for m in self.operations.values() 
+                     if m.category == category]
         
-        if not metrics.success and metrics.error_message:
-            log_msg += f", Error: {metrics.error_message}"
+        if not operations:
+            return AggregatedMetrics(0, 0.0, 0.0, 0, category)
         
-        if metrics.success:
-            self.logger.info(log_msg)
-        else:
-            self.logger.error(log_msg) 
+        total_duration = sum(m.duration for m in operations)
+        error_count = sum(m.error_count for m in operations)
+        
+        return AggregatedMetrics(
+            operation_count=len(operations),
+            average_duration=total_duration / len(operations),
+            total_duration=total_duration,
+            error_count=error_count,
+            category=category
+        )
+    
+    def save_metrics(self) -> None:
+        """Save current metrics to file."""
+        metrics_data = {
+            "operations": {
+                op_id: {
+                    "operation_name": metrics.operation_name,
+                    "start_time": metrics.start_time,
+                    "end_time": metrics.end_time,
+                    "duration": metrics.duration,
+                    "error_count": metrics.error_count,
+                    "last_error": metrics.last_error,
+                    "exceeded_threshold": metrics.exceeded_threshold,
+                    "threshold_duration": metrics.threshold_duration,
+                    "timed_out": metrics.timed_out,
+                    "timeout_duration": metrics.timeout_duration,
+                    "category": metrics.category,
+                    "metadata": metrics.metadata
+                }
+                for op_id, metrics in self.operations.items()
+            },
+            "performance_thresholds": self.performance_thresholds,
+            "operation_timeouts": self.operation_timeouts
+        }
+        
+        with open(self.metrics_file, 'w') as f:
+            json.dump(metrics_data, f)
+    
+    def load_metrics(self) -> None:
+        """Load metrics from file."""
+        if not os.path.exists(self.metrics_file):
+            return
+        
+        with open(self.metrics_file, 'r') as f:
+            metrics_data = json.load(f)
+        
+        self.operations = {
+            op_id: OperationMetrics(**metrics)
+            for op_id, metrics in metrics_data["operations"].items()
+        }
+        self.performance_thresholds = metrics_data["performance_thresholds"]
+        self.operation_timeouts = metrics_data["operation_timeouts"]
+    
+    def clear_metrics(self) -> None:
+        """Clear current metrics."""
+        self.operations.clear()
+        self.performance_thresholds.clear()
+        self.operation_timeouts.clear()
+    
+    def reset_metrics(self) -> None:
+        """Reset all metrics."""
+        self.clear_metrics()
+        if os.path.exists(self.metrics_file):
+            os.remove(self.metrics_file) 

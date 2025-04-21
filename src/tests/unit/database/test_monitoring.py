@@ -7,133 +7,171 @@ import pytest
 import time
 from datetime import datetime
 from datasync.database.monitoring import DatabaseMonitor, OperationMetrics
-
-@pytest.fixture
-def db_monitor():
-    """Create a DatabaseMonitor instance."""
-    return DatabaseMonitor()
+from tests.fixtures.database import db_monitor
 
 class TestDatabaseMonitor:
     """Test suite for DatabaseMonitor class."""
     
-    def test_initialization(self, db_monitor):
-        """Test monitor initialization."""
-        assert len(db_monitor.operation_history) == 0
-        assert len(db_monitor.error_counts) == 0
-        assert len(db_monitor.operation_times) == 0
-    
-    def test_start_operation(self, db_monitor):
-        """Test starting a new operation."""
-        query = "SELECT * FROM test_table"
-        metrics = db_monitor.start_operation("SELECT", query)
+    def test_operation_tracking(self, db_monitor):
+        """Test operation tracking functionality."""
+        # Start tracking an operation
+        operation_id = db_monitor.start_operation("test_operation")
+        assert operation_id is not None
         
+        # Simulate some work
+        time.sleep(0.1)
+        
+        # End the operation
+        metrics = db_monitor.end_operation(operation_id)
         assert isinstance(metrics, OperationMetrics)
-        assert metrics.operation_type == "SELECT"
-        assert metrics.query == query
-        assert metrics.start_time > 0
-        assert metrics.end_time == 0
-        assert not metrics.success
-        assert metrics.affected_rows == 0
+        assert metrics.operation_name == "test_operation"
+        assert metrics.duration > 0
+        assert metrics.start_time < metrics.end_time
     
-    def test_end_operation(self, db_monitor):
-        """Test ending an operation."""
-        metrics = db_monitor.start_operation("SELECT")
-        time.sleep(0.1)  # Simulate some work
-        db_monitor.end_operation(metrics, True, affected_rows=5)
+    def test_error_tracking(self, db_monitor):
+        """Test error tracking functionality."""
+        # Start tracking an operation
+        operation_id = db_monitor.start_operation("test_operation")
         
-        assert metrics.end_time > metrics.start_time
-        assert metrics.success
-        assert metrics.affected_rows == 5
-        assert len(db_monitor.operation_history) == 1
-        assert len(db_monitor.operation_times["SELECT"]) == 1
-    
-    def test_end_operation_with_error(self, db_monitor):
-        """Test ending an operation with an error."""
-        metrics = db_monitor.start_operation("INSERT")
-        error_message = "Duplicate key error"
-        db_monitor.end_operation(metrics, False, error_message)
+        # Record an error
+        error = Exception("Test error")
+        db_monitor.record_error(operation_id, error)
         
-        assert not metrics.success
-        assert metrics.error_message == error_message
-        assert db_monitor.error_counts[error_message] == 1
+        # End the operation
+        metrics = db_monitor.end_operation(operation_id)
+        assert metrics.error_count == 1
+        assert metrics.last_error == str(error)
     
-    def test_get_operation_stats(self, db_monitor):
-        """Test getting operation statistics."""
-        # Add some operations
+    def test_metrics_aggregation(self, db_monitor):
+        """Test metrics aggregation functionality."""
+        # Track multiple operations
+        operation_ids = []
         for i in range(3):
-            metrics = db_monitor.start_operation("SELECT")
-            db_monitor.end_operation(metrics, True, affected_rows=i+1)
+            operation_id = db_monitor.start_operation(f"test_operation_{i}")
+            time.sleep(0.1)
+            db_monitor.end_operation(operation_id)
+            operation_ids.append(operation_id)
         
-        stats = db_monitor.get_operation_stats("SELECT")
-        assert stats["total_operations"] == 3
-        assert stats["successful_operations"] == 3
-        assert stats["failed_operations"] == 0
-        assert stats["total_rows_affected"] == 6
-        assert stats["average_rows_affected"] == 2
+        # Get aggregated metrics
+        aggregated_metrics = db_monitor.get_aggregated_metrics("test_operation")
+        assert aggregated_metrics.operation_count == 3
+        assert aggregated_metrics.average_duration > 0
+        assert aggregated_metrics.total_duration > 0
     
-    def test_get_error_summary(self, db_monitor):
-        """Test getting error summary."""
-        # Add some errors
-        errors = [
-            "Duplicate key",
-            "Connection timeout",
-            "Duplicate key",
-            "Invalid data"
-        ]
+    def test_performance_thresholds(self, db_monitor):
+        """Test performance threshold monitoring."""
+        # Set a performance threshold
+        db_monitor.set_performance_threshold("test_operation", 0.2)  # 200ms
         
-        for error in errors:
-            metrics = db_monitor.start_operation("INSERT")
-            db_monitor.end_operation(metrics, False, error)
+        # Track a slow operation
+        operation_id = db_monitor.start_operation("test_operation")
+        time.sleep(0.3)  # Exceeds threshold
+        metrics = db_monitor.end_operation(operation_id)
         
-        summary = db_monitor.get_error_summary()
-        assert summary["Duplicate key"] == 2
-        assert summary["Connection timeout"] == 1
-        assert summary["Invalid data"] == 1
+        assert metrics.exceeded_threshold is True
+        assert metrics.threshold_duration == 0.2
     
-    def test_get_performance_report(self, db_monitor):
-        """Test getting performance report."""
-        # Add operations of different types
-        operations = [
-            ("SELECT", True, 10),
-            ("INSERT", True, 1),
-            ("SELECT", False, 0),
-            ("UPDATE", True, 5)
-        ]
+    def test_operation_categories(self, db_monitor):
+        """Test operation categorization."""
+        # Track operations in different categories
+        categories = ["read", "write", "delete"]
+        for category in categories:
+            operation_id = db_monitor.start_operation(f"test_{category}", category=category)
+            time.sleep(0.1)
+            db_monitor.end_operation(operation_id)
         
-        for op_type, success, rows in operations:
-            metrics = db_monitor.start_operation(op_type)
-            db_monitor.end_operation(
-                metrics,
-                success,
-                "Error" if not success else None,
-                rows
-            )
-        
-        report = db_monitor.get_performance_report()
-        assert "timestamp" in report
-        assert report["total_operations"] == 4
-        assert len(report["operation_types"]) == 3
-        assert "error_summary" in report
-        assert report["error_summary"]["Error"] == 1
+        # Verify category metrics
+        for category in categories:
+            metrics = db_monitor.get_category_metrics(category)
+            assert metrics.operation_count == 1
+            assert metrics.category == category
     
-    def test_clear_history(self, db_monitor):
-        """Test clearing operation history."""
-        # Add some operations
-        metrics = db_monitor.start_operation("SELECT")
-        db_monitor.end_operation(metrics, True)
+    def test_metrics_persistence(self, db_monitor):
+        """Test metrics persistence functionality."""
+        # Track some operations
+        operation_ids = []
+        for i in range(3):
+            operation_id = db_monitor.start_operation(f"test_operation_{i}")
+            time.sleep(0.1)
+            db_monitor.end_operation(operation_id)
+            operation_ids.append(operation_id)
         
-        db_monitor.clear_history()
-        assert len(db_monitor.operation_history) == 0
-        assert len(db_monitor.error_counts) == 0
-        assert len(db_monitor.operation_times) == 0
+        # Save metrics
+        db_monitor.save_metrics()
+        
+        # Clear current metrics
+        db_monitor.clear_metrics()
+        
+        # Load saved metrics
+        db_monitor.load_metrics()
+        
+        # Verify metrics were restored
+        aggregated_metrics = db_monitor.get_aggregated_metrics("test_operation")
+        assert aggregated_metrics.operation_count == 3
     
-    def test_log_operation(self, db_monitor, caplog):
-        """Test logging operation details."""
-        metrics = db_monitor.start_operation("SELECT", "SELECT * FROM test")
-        db_monitor.end_operation(metrics, True, affected_rows=5)
+    def test_operation_metadata(self, db_monitor):
+        """Test operation metadata tracking."""
+        # Start operation with metadata
+        metadata = {
+            "table": "test_table",
+            "record_count": 100,
+            "batch_size": 50
+        }
+        operation_id = db_monitor.start_operation("test_operation", metadata=metadata)
         
-        db_monitor.log_operation(metrics)
-        assert "Operation: SELECT" in caplog.text
-        assert "Success: True" in caplog.text
-        assert "Rows affected: 5" in caplog.text
-        assert "Query: SELECT * FROM test" in caplog.text 
+        # End operation
+        metrics = db_monitor.end_operation(operation_id)
+        
+        # Verify metadata
+        assert metrics.metadata == metadata
+    
+    def test_concurrent_operations(self, db_monitor):
+        """Test tracking of concurrent operations."""
+        # Start multiple concurrent operations
+        operation_ids = []
+        for i in range(3):
+            operation_id = db_monitor.start_operation(f"concurrent_operation_{i}")
+            operation_ids.append(operation_id)
+        
+        # Verify concurrent operation count
+        assert db_monitor.get_concurrent_operation_count() == 3
+        
+        # End operations
+        for operation_id in operation_ids:
+            db_monitor.end_operation(operation_id)
+        
+        # Verify no concurrent operations
+        assert db_monitor.get_concurrent_operation_count() == 0
+    
+    def test_operation_timeout(self, db_monitor):
+        """Test operation timeout monitoring."""
+        # Set operation timeout
+        db_monitor.set_operation_timeout("test_operation", 0.2)  # 200ms
+        
+        # Start operation
+        operation_id = db_monitor.start_operation("test_operation")
+        
+        # Simulate timeout
+        time.sleep(0.3)
+        
+        # End operation
+        metrics = db_monitor.end_operation(operation_id)
+        
+        assert metrics.timed_out is True
+        assert metrics.timeout_duration == 0.2
+    
+    def test_metrics_reset(self, db_monitor):
+        """Test metrics reset functionality."""
+        # Track some operations
+        for i in range(3):
+            operation_id = db_monitor.start_operation(f"test_operation_{i}")
+            time.sleep(0.1)
+            db_monitor.end_operation(operation_id)
+        
+        # Reset metrics
+        db_monitor.reset_metrics()
+        
+        # Verify metrics are cleared
+        aggregated_metrics = db_monitor.get_aggregated_metrics("test_operation")
+        assert aggregated_metrics.operation_count == 0
+        assert aggregated_metrics.total_duration == 0 

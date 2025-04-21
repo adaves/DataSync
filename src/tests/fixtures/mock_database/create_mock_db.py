@@ -7,6 +7,7 @@ import pandas as pd
 from pathlib import Path
 import os
 import win32com.client
+from datasync.utils.path_utils import ensure_directory_exists, format_connection_string_path
 
 def create_mock_database(db_path: str):
     """
@@ -16,7 +17,7 @@ def create_mock_database(db_path: str):
         db_path: Path where the mock database will be created
     """
     # Ensure the directory exists
-    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    ensure_directory_exists(Path(db_path).parent)
     
     try:
         # Create the database using ADOX
@@ -27,7 +28,7 @@ def create_mock_database(db_path: str):
         # Now connect to the created database
         conn_str = (
             r'DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};'
-            f'DBQ={db_path};'
+            f'DBQ={format_connection_string_path(db_path)};'
         )
         conn = pyodbc.connect(conn_str)
         cursor = conn.cursor()

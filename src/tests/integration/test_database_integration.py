@@ -12,44 +12,24 @@ import pyodbc
 from datasync.database.operations import DatabaseOperations
 from datasync.database.validation import DatabaseValidation
 from datasync.database.monitoring import DatabaseMonitor
-
-@pytest.fixture(scope="module")
-def test_db_path(tmp_path_factory):
-    """Create a temporary test database that persists for all tests in this module."""
-    db_path = tmp_path_factory.mktemp("test_db") / "test_database.accdb"
-    return db_path
-
-@pytest.fixture(scope="module")
-def db_operations(test_db_path):
-    """Create a DatabaseOperations instance with the test database."""
-    return DatabaseOperations(test_db_path)
-
-@pytest.fixture(scope="module")
-def db_validation():
-    """Create a DatabaseValidation instance."""
-    return DatabaseValidation()
-
-@pytest.fixture(scope="module")
-def db_monitor():
-    """Create a DatabaseMonitor instance."""
-    return DatabaseMonitor()
+from tests.fixtures.database import module_db_path, module_db_operations, db_validation, db_monitor
 
 class TestDatabaseIntegration:
     """Test suite for database integration tests."""
     
-    def test_database_connection(self, db_operations):
+    def test_database_connection(self, module_db_operations):
         """Test establishing a real database connection."""
         try:
-            db_operations.connect()
-            assert db_operations.conn is not None
-            assert db_operations.cursor is not None
+            module_db_operations.connect()
+            assert module_db_operations.conn is not None
+            assert module_db_operations.cursor is not None
         finally:
-            db_operations.close()
+            module_db_operations.close()
     
-    def test_create_and_query_table(self, db_operations):
+    def test_create_and_query_table(self, module_db_operations):
         """Test creating a table and performing basic queries."""
         try:
-            db_operations.connect()
+            module_db_operations.connect()
             
             # Create a test table
             create_table_sql = """
@@ -60,10 +40,10 @@ class TestDatabaseIntegration:
                 CreatedDate DATETIME
             )
             """
-            db_operations.execute_query(create_table_sql)
+            module_db_operations.execute_query(create_table_sql)
             
             # Verify table was created
-            tables = db_operations.get_tables()
+            tables = module_db_operations.get_tables()
             assert "TestTable" in tables
             
             # Insert some test data
@@ -77,11 +57,11 @@ class TestDatabaseIntegration:
                 INSERT INTO TestTable (Name, Value, CreatedDate)
                 VALUES (?, ?, ?)
                 """
-                db_operations.execute_query(insert_sql, (name, value, date))
+                module_db_operations.execute_query(insert_sql, (name, value, date))
             
             # Query the data
             select_sql = "SELECT * FROM TestTable ORDER BY ID"
-            results = db_operations.execute_query(select_sql)
+            results = module_db_operations.execute_query(select_sql)
             
             assert len(results) == 2
             assert results[0]["Name"] == "Test1"
@@ -91,14 +71,13 @@ class TestDatabaseIntegration:
             
         finally:
             # Clean up
-            if db_operations.conn:
-                db_operations.execute_query("DROP TABLE TestTable")
-                db_operations.close()
+            module_db_operations.execute_query("DROP TABLE TestTable")
+            module_db_operations.close()
     
-    def test_transaction_rollback(self, db_operations):
+    def test_transaction_rollback(self, module_db_operations):
         """Test transaction rollback on error."""
         try:
-            db_operations.connect()
+            module_db_operations.connect()
             
             # Create a test table
             create_table_sql = """
@@ -107,41 +86,40 @@ class TestDatabaseIntegration:
                 Name TEXT(50) NOT NULL
             )
             """
-            db_operations.execute_query(create_table_sql)
+            module_db_operations.execute_query(create_table_sql)
             
             # Start a transaction
-            db_operations.execute_query("BEGIN TRANSACTION")
+            module_db_operations.execute_query("BEGIN TRANSACTION")
             
             # Insert valid data
-            db_operations.execute_query(
+            module_db_operations.execute_query(
                 "INSERT INTO TestTransactions (Name) VALUES (?)",
                 ("Valid",)
             )
             
             # Try to insert invalid data (should fail)
             with pytest.raises(pyodbc.Error):
-                db_operations.execute_query(
+                module_db_operations.execute_query(
                     "INSERT INTO TestTransactions (Name) VALUES (?)",
                     (None,)  # This should fail due to NOT NULL constraint
                 )
             
             # Rollback the transaction
-            db_operations.execute_query("ROLLBACK")
+            module_db_operations.execute_query("ROLLBACK")
             
             # Verify no data was inserted
-            results = db_operations.execute_query("SELECT * FROM TestTransactions")
+            results = module_db_operations.execute_query("SELECT * FROM TestTransactions")
             assert len(results) == 0
             
         finally:
             # Clean up
-            if db_operations.conn:
-                db_operations.execute_query("DROP TABLE TestTransactions")
-                db_operations.close()
+            module_db_operations.execute_query("DROP TABLE TestTransactions")
+            module_db_operations.close()
     
-    def test_concurrent_operations(self, db_operations):
+    def test_concurrent_operations(self, module_db_operations):
         """Test handling of concurrent database operations."""
         try:
-            db_operations.connect()
+            module_db_operations.connect()
             
             # Create a test table
             create_table_sql = """
@@ -150,10 +128,10 @@ class TestDatabaseIntegration:
                 Counter INT DEFAULT 0
             )
             """
-            db_operations.execute_query(create_table_sql)
+            module_db_operations.execute_query(create_table_sql)
             
             # Insert initial data
-            db_operations.execute_query(
+            module_db_operations.execute_query(
                 "INSERT INTO TestConcurrency (Counter) VALUES (0)"
             )
             
@@ -166,48 +144,47 @@ class TestDatabaseIntegration:
             
             # Perform multiple updates
             for _ in range(5):
-                db_operations.execute_query(update_sql)
+                module_db_operations.execute_query(update_sql)
             
             # Verify final state
-            results = db_operations.execute_query(
+            results = module_db_operations.execute_query(
                 "SELECT Counter FROM TestConcurrency WHERE ID = 1"
             )
             assert results[0]["Counter"] == 5
             
         finally:
             # Clean up
-            if db_operations.conn:
-                db_operations.execute_query("DROP TABLE TestConcurrency")
-                db_operations.close()
+            module_db_operations.execute_query("DROP TABLE TestConcurrency")
+            module_db_operations.close()
     
-    def test_error_handling(self, db_operations):
+    def test_error_handling(self, module_db_operations):
         """Test error handling with invalid operations."""
         try:
-            db_operations.connect()
+            module_db_operations.connect()
             
             # Test invalid table name
             with pytest.raises(pyodbc.Error):
-                db_operations.execute_query("SELECT * FROM NonExistentTable")
+                module_db_operations.execute_query("SELECT * FROM NonExistentTable")
             
             # Test invalid SQL syntax
             with pytest.raises(pyodbc.Error):
-                db_operations.execute_query("INVALID SQL STATEMENT")
+                module_db_operations.execute_query("INVALID SQL STATEMENT")
             
             # Test invalid parameter count
             with pytest.raises(pyodbc.Error):
-                db_operations.execute_query(
+                module_db_operations.execute_query(
                     "SELECT * FROM TestTable WHERE ID = ?",
                     (1, 2)  # Too many parameters
                 )
             
         finally:
-            if db_operations.conn:
-                db_operations.close()
+            if module_db_operations.conn:
+                module_db_operations.close()
 
-    def test_insert_record_integration(self, db_operations):
+    def test_insert_record_integration(self, module_db_operations):
         """Test insert_record with a real database."""
         try:
-            db_operations.connect()
+            module_db_operations.connect()
             
             # Create a test table
             create_table_sql = """
@@ -218,7 +195,7 @@ class TestDatabaseIntegration:
                 CreatedDate DATETIME
             )
             """
-            db_operations.execute_query(create_table_sql)
+            module_db_operations.execute_query(create_table_sql)
             
             # Test single record insertion
             record = {
@@ -227,24 +204,24 @@ class TestDatabaseIntegration:
                 "CreatedDate": datetime.now()
             }
             
-            result = db_operations.insert_record("TestInsert", record)
+            result = module_db_operations.insert_record("TestInsert", record)
             assert result == 1
             
             # Verify the record was inserted
-            results = db_operations.execute_query("SELECT * FROM TestInsert")
+            results = module_db_operations.execute_query("SELECT * FROM TestInsert")
             assert len(results) == 1
             assert results[0]["Name"] == "Test Insert"
             assert results[0]["Value"] == 42.5
             
         finally:
-            if db_operations.conn:
-                db_operations.execute_query("DROP TABLE TestInsert")
-                db_operations.close()
+            if module_db_operations.conn:
+                module_db_operations.execute_query("DROP TABLE TestInsert")
+                module_db_operations.close()
 
-    def test_batch_insert_integration(self, db_operations):
+    def test_batch_insert_integration(self, module_db_operations):
         """Test batch_insert with a real database."""
         try:
-            db_operations.connect()
+            module_db_operations.connect()
             
             # Create a test table
             create_table_sql = """
@@ -255,7 +232,7 @@ class TestDatabaseIntegration:
                 CreatedDate DATETIME
             )
             """
-            db_operations.execute_query(create_table_sql)
+            module_db_operations.execute_query(create_table_sql)
             
             # Prepare test data
             records = [
@@ -268,25 +245,25 @@ class TestDatabaseIntegration:
             ]
             
             # Test batch insertion
-            result = db_operations.batch_insert("TestBatchInsert", records, batch_size=2)
+            result = module_db_operations.batch_insert("TestBatchInsert", records, batch_size=2)
             assert result == 5
             
             # Verify all records were inserted
-            results = db_operations.execute_query("SELECT * FROM TestBatchInsert ORDER BY ID")
+            results = module_db_operations.execute_query("SELECT * FROM TestBatchInsert ORDER BY ID")
             assert len(results) == 5
             for i, record in enumerate(results, 1):
                 assert record["Name"] == f"Test {i}"
                 assert record["Value"] == float(i)
             
         finally:
-            if db_operations.conn:
-                db_operations.execute_query("DROP TABLE TestBatchInsert")
-                db_operations.close()
+            if module_db_operations.conn:
+                module_db_operations.execute_query("DROP TABLE TestBatchInsert")
+                module_db_operations.close()
 
-    def test_upsert_integration(self, db_operations):
+    def test_upsert_integration(self, module_db_operations):
         """Test upsert with a real database."""
         try:
-            db_operations.connect()
+            module_db_operations.connect()
             
             # Create a test table with a unique constraint
             create_table_sql = """
@@ -297,7 +274,7 @@ class TestDatabaseIntegration:
                 CreatedDate DATETIME
             )
             """
-            db_operations.execute_query(create_table_sql)
+            module_db_operations.execute_query(create_table_sql)
             
             # Test initial insert
             record = {
@@ -306,11 +283,11 @@ class TestDatabaseIntegration:
                 "CreatedDate": datetime.now()
             }
             
-            result = db_operations.upsert("TestUpsert", record, ["Name"])
+            result = module_db_operations.upsert("TestUpsert", record, ["Name"])
             assert result == 1
             
             # Verify initial insert
-            results = db_operations.execute_query("SELECT * FROM TestUpsert")
+            results = module_db_operations.execute_query("SELECT * FROM TestUpsert")
             assert len(results) == 1
             assert results[0]["Value"] == 42.5
             
@@ -321,23 +298,23 @@ class TestDatabaseIntegration:
                 "CreatedDate": datetime.now()
             }
             
-            result = db_operations.upsert("TestUpsert", updated_record, ["Name"])
+            result = module_db_operations.upsert("TestUpsert", updated_record, ["Name"])
             assert result == 1
             
             # Verify update
-            results = db_operations.execute_query("SELECT * FROM TestUpsert")
+            results = module_db_operations.execute_query("SELECT * FROM TestUpsert")
             assert len(results) == 1
             assert results[0]["Value"] == 99.9
             
         finally:
-            if db_operations.conn:
-                db_operations.execute_query("DROP TABLE TestUpsert")
-                db_operations.close()
+            if module_db_operations.conn:
+                module_db_operations.execute_query("DROP TABLE TestUpsert")
+                module_db_operations.close()
 
-    def test_transaction_integration(self, db_operations):
+    def test_transaction_integration(self, module_db_operations):
         """Test transaction management with a real database."""
         try:
-            db_operations.connect()
+            module_db_operations.connect()
             
             # Create a test table
             create_table_sql = """
@@ -347,60 +324,60 @@ class TestDatabaseIntegration:
                 Value DOUBLE
             )
             """
-            db_operations.execute_query(create_table_sql)
+            module_db_operations.execute_query(create_table_sql)
             
             # Test transaction rollback
-            db_operations.begin_transaction()
+            module_db_operations.begin_transaction()
             
             # Insert a record
             record = {
                 "Name": "Test Transaction",
                 "Value": 42.5
             }
-            db_operations.insert_record("TestTransactions", record)
+            module_db_operations.insert_record("TestTransactions", record)
             
             # Verify record exists before rollback
-            results = db_operations.execute_query("SELECT * FROM TestTransactions")
+            results = module_db_operations.execute_query("SELECT * FROM TestTransactions")
             assert len(results) == 1
             
             # Rollback the transaction
-            db_operations.rollback_transaction()
+            module_db_operations.rollback_transaction()
             
             # Verify record was rolled back
-            results = db_operations.execute_query("SELECT * FROM TestTransactions")
+            results = module_db_operations.execute_query("SELECT * FROM TestTransactions")
             assert len(results) == 0
             
             # Test successful transaction
-            db_operations.begin_transaction()
+            module_db_operations.begin_transaction()
             
             # Insert a record
-            db_operations.insert_record("TestTransactions", record)
+            module_db_operations.insert_record("TestTransactions", record)
             
             # Commit the transaction
-            db_operations.commit_transaction()
+            module_db_operations.commit_transaction()
             
             # Verify record exists after commit
-            results = db_operations.execute_query("SELECT * FROM TestTransactions")
+            results = module_db_operations.execute_query("SELECT * FROM TestTransactions")
             assert len(results) == 1
             assert results[0]["Name"] == "Test Transaction"
             assert results[0]["Value"] == 42.5
             
         finally:
-            if db_operations.conn:
-                db_operations.execute_query("DROP TABLE TestTransactions")
-                db_operations.close()
+            if module_db_operations.conn:
+                module_db_operations.execute_query("DROP TABLE TestTransactions")
+                module_db_operations.close()
 
 class TestReadOperationsIntegration:
     """Test suite for read operations integration tests."""
     
     @pytest.fixture(autouse=True)
-    def setup_test_data(self, db_operations):
+    def setup_test_data(self, module_db_operations):
         """Set up test data for read operation tests."""
         try:
-            db_operations.connect()
+            module_db_operations.connect()
             
             # Create test tables
-            db_operations.execute_query("""
+            module_db_operations.execute_query("""
                 CREATE TABLE test_products (
                     id INTEGER PRIMARY KEY,
                     name TEXT(50),
@@ -411,7 +388,7 @@ class TestReadOperationsIntegration:
                 )
             """)
             
-            db_operations.execute_query("""
+            module_db_operations.execute_query("""
                 CREATE TABLE test_orders (
                     id INTEGER PRIMARY KEY,
                     product_id INTEGER,
@@ -439,13 +416,13 @@ class TestReadOperationsIntegration:
             ]
             
             for product in products:
-                db_operations.execute_query(
+                module_db_operations.execute_query(
                     "INSERT INTO test_products VALUES (?, ?, ?, ?, ?, ?)",
                     product
                 )
             
             for order in orders:
-                db_operations.execute_query(
+                module_db_operations.execute_query(
                     "INSERT INTO test_orders VALUES (?, ?, ?, ?, ?)",
                     order
                 )
@@ -454,21 +431,21 @@ class TestReadOperationsIntegration:
             
         finally:
             # Clean up
-            db_operations.execute_query("DROP TABLE test_products")
-            db_operations.execute_query("DROP TABLE test_orders")
-            db_operations.close()
+            module_db_operations.execute_query("DROP TABLE test_products")
+            module_db_operations.execute_query("DROP TABLE test_orders")
+            module_db_operations.close()
     
-    def test_basic_read_operations(self, db_operations):
+    def test_basic_read_operations(self, module_db_operations):
         """Test basic read operations with real data."""
-        results = db_operations.read_records("test_products")
+        results = module_db_operations.read_records("test_products")
         assert len(results) == 5
         assert results[0]["name"] == "Product A"
         assert results[0]["price"] == 10.99
     
-    def test_filtering_operations(self, db_operations):
+    def test_filtering_operations(self, module_db_operations):
         """Test filtering operations with real data."""
         # Test basic filter
-        results = db_operations.read_records(
+        results = module_db_operations.read_records(
             "test_products",
             filters={"category": "Category 1"}
         )
@@ -476,7 +453,7 @@ class TestReadOperationsIntegration:
         assert all(r["category"] == "Category 1" for r in results)
         
         # Test IN clause
-        results = db_operations.read_records(
+        results = module_db_operations.read_records(
             "test_products",
             filters={"id": [1, 3, 5]}
         )
@@ -489,17 +466,17 @@ class TestReadOperationsIntegration:
             "start_date": "2023-01-01",
             "end_date": "2023-01-31"
         }
-        results = db_operations.read_records(
+        results = module_db_operations.read_records(
             "test_products",
             date_range=date_range
         )
         assert len(results) == 2
         assert all("2023-01" in r["created_date"] for r in results)
     
-    def test_sorting_and_pagination(self, db_operations):
+    def test_sorting_and_pagination(self, module_db_operations):
         """Test sorting and pagination with real data."""
         # Test sorting
-        results = db_operations.read_records(
+        results = module_db_operations.read_records(
             "test_products",
             sort_by=["price"],
             sort_desc=True
@@ -509,7 +486,7 @@ class TestReadOperationsIntegration:
         assert results[-1]["price"] == 10.99
         
         # Test pagination
-        results = db_operations.read_records(
+        results = module_db_operations.read_records(
             "test_products",
             limit=2,
             offset=2
@@ -517,7 +494,7 @@ class TestReadOperationsIntegration:
         assert len(results) == 2
         assert results[0]["id"] == 3
     
-    def test_aggregate_operations(self, db_operations):
+    def test_aggregate_operations(self, module_db_operations):
         """Test aggregate operations with real data."""
         # Test basic aggregation
         aggregates = {
@@ -525,7 +502,7 @@ class TestReadOperationsIntegration:
             "avg_price": "AVG(price)",
             "product_count": "COUNT(*)"
         }
-        results = db_operations.aggregate_query("test_products", aggregates)
+        results = module_db_operations.aggregate_query("test_products", aggregates)
         assert len(results) == 1
         assert results[0]["total_stock"] == 275
         assert round(results[0]["avg_price"], 2) == 20.79
@@ -536,7 +513,7 @@ class TestReadOperationsIntegration:
             "total_stock": "SUM(stock)",
             "product_count": "COUNT(*)"
         }
-        results = db_operations.aggregate_query(
+        results = module_db_operations.aggregate_query(
             "test_products",
             aggregates,
             group_by=["category"]
@@ -545,7 +522,7 @@ class TestReadOperationsIntegration:
         category1 = next(r for r in results if r["category"] == "Category 1")
         assert category1["total_stock"] == 150
     
-    def test_subquery_operations(self, db_operations):
+    def test_subquery_operations(self, module_db_operations):
         """Test subquery operations with real data."""
         # Test EXISTS subquery
         subquery = """
@@ -553,7 +530,7 @@ class TestReadOperationsIntegration:
             WHERE test_orders.product_id = test_products.id 
             AND test_orders.status = ?
         """
-        results = db_operations.subquery(
+        results = module_db_operations.subquery(
             "test_products",
             subquery,
             subquery_params=("completed",)
@@ -562,7 +539,7 @@ class TestReadOperationsIntegration:
         assert all(r["id"] in [1, 2, 4] for r in results)
         
         # Test subquery with additional filters
-        results = db_operations.subquery(
+        results = module_db_operations.subquery(
             "test_products",
             subquery,
             subquery_params=("completed",),
@@ -571,16 +548,16 @@ class TestReadOperationsIntegration:
         assert len(results) == 2
         assert all(r["category"] == "Category 1" for r in results)
     
-    def test_complex_query_building(self, db_operations):
+    def test_complex_query_building(self, module_db_operations):
         """Test complex query building with real data."""
-        query = db_operations.build_query(
+        query = module_db_operations.build_query(
             "test_products",
             columns=["id", "name", "price"],
             filters={"category": "Category 1"},
             sort_by=["price"],
             sort_desc=True
         )
-        results = db_operations.execute_query(query, ("Category 1",))
+        results = module_db_operations.execute_query(query, ("Category 1",))
         assert len(results) == 2
         assert results[0]["price"] == 15.99
         assert results[1]["price"] == 10.99
@@ -589,24 +566,24 @@ class TestUpdateOperationsIntegration:
     """Test suite for update operations integration tests."""
     
     @pytest.fixture(autouse=True)
-    def setup_test_data(self, db_operations):
+    def setup_test_data(self, module_db_operations):
         """Set up test data for update operation tests."""
         try:
-            db_operations.connect()
+            module_db_operations.connect()
             
             # Create test tables
-            db_operations.execute_query("""
+            module_db_operations.execute_query("""
                 CREATE TABLE test_products (
                     id INTEGER PRIMARY KEY,
                     name TEXT(50),
                     category TEXT(50),
                     price DECIMAL(10,2),
                     stock INTEGER,
-                    last_updated DATETIME
+                    created_date DATE
                 )
             """)
             
-            db_operations.execute_query("""
+            module_db_operations.execute_query("""
                 CREATE TABLE test_orders (
                     id INTEGER PRIMARY KEY,
                     product_id INTEGER,
@@ -618,11 +595,11 @@ class TestUpdateOperationsIntegration:
             
             # Insert test data
             products = [
-                (1, "Product A", "Category 1", 10.99, 100, "2023-01-01 10:00:00"),
-                (2, "Product B", "Category 1", 15.99, 50, "2023-01-15 11:00:00"),
-                (3, "Product C", "Category 2", 20.99, 75, "2023-02-01 12:00:00"),
-                (4, "Product D", "Category 2", 25.99, 30, "2023-02-15 13:00:00"),
-                (5, "Product E", "Category 3", 30.99, 20, "2023-03-01 14:00:00")
+                (1, "Product A", "Category 1", 10.99, 100, "2023-01-01"),
+                (2, "Product B", "Category 1", 15.99, 50, "2023-01-15"),
+                (3, "Product C", "Category 2", 20.99, 75, "2023-02-01"),
+                (4, "Product D", "Category 2", 25.99, 30, "2023-02-15"),
+                (5, "Product E", "Category 3", 30.99, 20, "2023-03-01")
             ]
             
             orders = [
@@ -634,13 +611,13 @@ class TestUpdateOperationsIntegration:
             ]
             
             for product in products:
-                db_operations.execute_query(
+                module_db_operations.execute_query(
                     "INSERT INTO test_products VALUES (?, ?, ?, ?, ?, ?)",
                     product
                 )
             
             for order in orders:
-                db_operations.execute_query(
+                module_db_operations.execute_query(
                     "INSERT INTO test_orders VALUES (?, ?, ?, ?, ?)",
                     order
                 )
@@ -649,11 +626,11 @@ class TestUpdateOperationsIntegration:
             
         finally:
             # Clean up
-            db_operations.execute_query("DROP TABLE test_products")
-            db_operations.execute_query("DROP TABLE test_orders")
-            db_operations.close()
+            module_db_operations.execute_query("DROP TABLE test_products")
+            module_db_operations.execute_query("DROP TABLE test_orders")
+            module_db_operations.close()
     
-    def test_single_record_update(self, db_operations):
+    def test_single_record_update(self, module_db_operations):
         """Test updating a single record."""
         # Update a product
         record = {
@@ -662,11 +639,11 @@ class TestUpdateOperationsIntegration:
             "price": 12.99,
             "stock": 150
         }
-        result = db_operations.update_record("test_products", record, ["id"])
+        result = module_db_operations.update_record("test_products", record, ["id"])
         assert result == 1
         
         # Verify update
-        results = db_operations.execute_query(
+        results = module_db_operations.execute_query(
             "SELECT * FROM test_products WHERE id = 1"
         )
         assert len(results) == 1
@@ -675,7 +652,7 @@ class TestUpdateOperationsIntegration:
         assert results[0]["stock"] == 150
         assert results[0]["category"] == "Category 1"  # Unchanged field
     
-    def test_batch_update_products(self, db_operations):
+    def test_batch_update_products(self, module_db_operations):
         """Test batch updating multiple products."""
         # Prepare update records
         records = [
@@ -685,11 +662,11 @@ class TestUpdateOperationsIntegration:
         ]
         
         # Update records in batch
-        result = db_operations.batch_update("test_products", records, ["id"], batch_size=2)
+        result = module_db_operations.batch_update("test_products", records, ["id"], batch_size=2)
         assert result == 3
         
         # Verify updates
-        results = db_operations.execute_query(
+        results = module_db_operations.execute_query(
             "SELECT * FROM test_products WHERE id IN (1, 2, 3) ORDER BY id"
         )
         assert len(results) == 3
@@ -700,7 +677,7 @@ class TestUpdateOperationsIntegration:
         assert results[2]["price"] == 21.99
         assert results[2]["stock"] == 150
     
-    def test_update_with_conditions(self, db_operations):
+    def test_update_with_conditions(self, module_db_operations):
         """Test updating records with conditions."""
         # Update all products in Category 1
         updates = {
@@ -710,21 +687,21 @@ class TestUpdateOperationsIntegration:
         conditions = {
             "category": "Category 1"
         }
-        result = db_operations.update_with_conditions("test_products", updates, conditions)
+        result = module_db_operations.update_with_conditions("test_products", updates, conditions)
         assert result == 2
         
         # Verify updates
-        results = db_operations.execute_query(
+        results = module_db_operations.execute_query(
             "SELECT * FROM test_products WHERE category = 'Category 1'"
         )
         assert len(results) == 2
         assert all(r["price"] == 14.99 for r in results)
         assert all(r["stock"] == 200 for r in results)
     
-    def test_update_transaction_rollback(self, db_operations):
+    def test_update_transaction_rollback(self, module_db_operations):
         """Test transaction rollback during update."""
         # Start transaction
-        db_operations.begin_transaction()
+        module_db_operations.begin_transaction()
         
         try:
             # Update a product
@@ -733,7 +710,7 @@ class TestUpdateOperationsIntegration:
                 "name": "Updated Product A",
                 "price": 12.99
             }
-            db_operations.update_record("test_products", record, ["id"])
+            module_db_operations.update_record("test_products", record, ["id"])
             
             # Try to update with invalid data (should fail)
             with pytest.raises(pyodbc.Error):
@@ -742,10 +719,10 @@ class TestUpdateOperationsIntegration:
                     "name": None,  # This should fail due to NOT NULL constraint
                     "price": 15.99
                 }
-                db_operations.update_record("test_products", invalid_record, ["id"])
+                module_db_operations.update_record("test_products", invalid_record, ["id"])
             
             # Verify rollback
-            results = db_operations.execute_query(
+            results = module_db_operations.execute_query(
                 "SELECT * FROM test_products WHERE id = 1"
             )
             assert len(results) == 1
@@ -753,9 +730,9 @@ class TestUpdateOperationsIntegration:
             assert results[0]["price"] == 10.99  # Original value
             
         finally:
-            db_operations.rollback_transaction()
+            module_db_operations.rollback_transaction()
     
-    def test_concurrent_updates(self, db_operations):
+    def test_concurrent_updates(self, module_db_operations):
         """Test handling of concurrent updates."""
         # Update the same product multiple times
         for i in range(5):
@@ -763,17 +740,17 @@ class TestUpdateOperationsIntegration:
                 "id": 1,
                 "stock": 100 + i * 10
             }
-            result = db_operations.update_record("test_products", record, ["id"])
+            result = module_db_operations.update_record("test_products", record, ["id"])
             assert result == 1
         
         # Verify final state
-        results = db_operations.execute_query(
+        results = module_db_operations.execute_query(
             "SELECT * FROM test_products WHERE id = 1"
         )
         assert len(results) == 1
         assert results[0]["stock"] == 140  # 100 + (4 * 10)
     
-    def test_update_with_join(self, db_operations):
+    def test_update_with_join(self, module_db_operations):
         """Test updating records based on join conditions."""
         # Update product prices based on order status
         updates = {
@@ -787,11 +764,11 @@ class TestUpdateOperationsIntegration:
                 WHERE o.status = 'completed'
             """
         }
-        result = db_operations.update_with_conditions("test_products", updates, conditions)
+        result = module_db_operations.update_with_conditions("test_products", updates, conditions)
         assert result == 3  # Products 1, 2, and 4 have completed orders
         
         # Verify updates
-        results = db_operations.execute_query(
+        results = module_db_operations.execute_query(
             "SELECT * FROM test_products WHERE id IN (1, 2, 4)"
         )
         assert len(results) == 3
@@ -801,76 +778,81 @@ class TestDeleteOperationsIntegration:
     """Integration tests for delete operations."""
     
     @pytest.fixture(autouse=True)
-    def setup(self, db_operations, temp_db_path):
+    def setup(self, module_db_operations):
         """Setup test tables and data."""
-        # Create test tables
-        db_operations.execute_query("""
-            CREATE TABLE test_products (
-                id INTEGER PRIMARY KEY,
-                name TEXT,
-                category TEXT,
-                status TEXT,
-                deleted_at DATETIME
-            )
-        """)
-        
-        db_operations.execute_query("""
-            CREATE TABLE test_orders (
-                id INTEGER PRIMARY KEY,
-                product_id INTEGER,
-                quantity INTEGER,
-                status TEXT,
-                FOREIGN KEY (product_id) REFERENCES test_products(id)
-            )
-        """)
-        
-        # Insert test data
-        db_operations.execute_query("""
-            INSERT INTO test_products (id, name, category, status)
-            VALUES (1, 'Product1', 'Electronics', 'active'),
-                   (2, 'Product2', 'Electronics', 'inactive'),
-                   (3, 'Product3', 'Clothing', 'active')
-        """)
-        
-        db_operations.execute_query("""
-            INSERT INTO test_orders (id, product_id, quantity, status)
-            VALUES (1, 1, 2, 'pending'),
-                   (2, 1, 1, 'completed'),
-                   (3, 2, 3, 'pending')
-        """)
-        
-        yield
-        
-        # Cleanup
-        db_operations.execute_query("DROP TABLE test_orders")
-        db_operations.execute_query("DROP TABLE test_products")
+        try:
+            module_db_operations.connect()
+            
+            # Create test tables
+            module_db_operations.execute_query("""
+                CREATE TABLE test_products (
+                    id INTEGER PRIMARY KEY,
+                    name TEXT,
+                    category TEXT,
+                    status TEXT,
+                    deleted_at DATETIME
+                )
+            """)
+            
+            module_db_operations.execute_query("""
+                CREATE TABLE test_orders (
+                    id INTEGER PRIMARY KEY,
+                    product_id INTEGER,
+                    quantity INTEGER,
+                    status TEXT,
+                    FOREIGN KEY (product_id) REFERENCES test_products(id)
+                )
+            """)
+            
+            # Insert test data
+            module_db_operations.execute_query("""
+                INSERT INTO test_products (id, name, category, status)
+                VALUES (1, 'Product1', 'Electronics', 'active'),
+                       (2, 'Product2', 'Electronics', 'inactive'),
+                       (3, 'Product3', 'Clothing', 'active')
+            """)
+            
+            module_db_operations.execute_query("""
+                INSERT INTO test_orders (id, product_id, quantity, status)
+                VALUES (1, 1, 2, 'pending'),
+                       (2, 1, 1, 'completed'),
+                       (3, 2, 3, 'pending')
+            """)
+            
+            yield
+            
+        finally:
+            # Cleanup
+            module_db_operations.execute_query("DROP TABLE test_orders")
+            module_db_operations.execute_query("DROP TABLE test_products")
+            module_db_operations.close()
     
-    def test_delete_with_conditions(self, db_operations):
+    def test_delete_with_conditions(self, module_db_operations):
         """Test delete with conditions in a real database scenario."""
         # Delete inactive products
-        deleted_count = db_operations.delete_records("test_products", {"status": "inactive"})
+        deleted_count = module_db_operations.delete_records("test_products", {"status": "inactive"})
         assert deleted_count == 1
         
         # Verify remaining products
-        products = db_operations.execute_query("SELECT * FROM test_products")
+        products = module_db_operations.execute_query("SELECT * FROM test_products")
         assert len(products) == 2
         assert all(p["status"] == "active" for p in products)
     
-    def test_soft_delete_integration(self, db_operations):
+    def test_soft_delete_integration(self, module_db_operations):
         """Test soft delete in a real database scenario."""
         # Perform soft delete
-        success = db_operations.soft_delete("test_products", 1)
+        success = module_db_operations.soft_delete("test_products", 1)
         assert success is True
         
         # Verify product is marked as deleted
-        product = db_operations.execute_query("SELECT * FROM test_products WHERE id = 1")[0]
+        product = module_db_operations.execute_query("SELECT * FROM test_products WHERE id = 1")[0]
         assert product["deleted_at"] is not None
         
         # Verify product is still in database
-        products = db_operations.execute_query("SELECT * FROM test_products")
+        products = module_db_operations.execute_query("SELECT * FROM test_products")
         assert len(products) == 3
     
-    def test_cascade_delete_integration(self, db_operations):
+    def test_cascade_delete_integration(self, module_db_operations):
         """Test cascade delete in a real database scenario."""
         # Configure cascade delete
         cascade_config = [
@@ -878,71 +860,71 @@ class TestDeleteOperationsIntegration:
         ]
         
         # Perform cascade delete
-        results = db_operations.cascade_delete("test_products", 1, cascade_config)
+        results = module_db_operations.cascade_delete("test_products", 1, cascade_config)
         assert results["test_products"] == 1
         assert results["test_orders"] == 2
         
         # Verify records are deleted
-        products = db_operations.execute_query("SELECT * FROM test_products")
-        orders = db_operations.execute_query("SELECT * FROM test_orders")
+        products = module_db_operations.execute_query("SELECT * FROM test_products")
+        orders = module_db_operations.execute_query("SELECT * FROM test_orders")
         assert len(products) == 2
         assert len(orders) == 1
         assert all(o["product_id"] != 1 for o in orders)
     
-    def test_delete_with_transaction_integration(self, db_operations):
+    def test_delete_with_transaction_integration(self, module_db_operations):
         """Test delete with transaction in a real database scenario."""
         # Start transaction
-        db_operations.begin_transaction()
+        module_db_operations.begin_transaction()
         
         try:
             # Delete product and its orders
-            deleted_count = db_operations.delete_with_transaction("test_products", {"id": 1})
+            deleted_count = module_db_operations.delete_with_transaction("test_products", {"id": 1})
             assert deleted_count == 1
             
             # Verify product is deleted
-            products = db_operations.execute_query("SELECT * FROM test_products")
+            products = module_db_operations.execute_query("SELECT * FROM test_products")
             assert len(products) == 2
             
             # Commit transaction
-            db_operations.commit_transaction()
+            module_db_operations.commit_transaction()
             
         except Exception:
-            db_operations.rollback_transaction()
+            module_db_operations.rollback_transaction()
             raise
     
-    def test_delete_transaction_rollback_integration(self, db_operations):
+    def test_delete_transaction_rollback_integration(self, module_db_operations):
         """Test transaction rollback during delete in a real database scenario."""
         # Start transaction
-        db_operations.begin_transaction()
+        module_db_operations.begin_transaction()
         
         try:
             # Attempt invalid delete
-            db_operations.delete_with_transaction("test_products", {"invalid_column": "value"})
+            module_db_operations.delete_with_transaction("test_products", {"invalid_column": "value"})
         except Exception:
             # Rollback should occur automatically
             pass
         
         # Verify no changes were made
-        products = db_operations.execute_query("SELECT * FROM test_products")
+        products = module_db_operations.execute_query("SELECT * FROM test_products")
         assert len(products) == 3
     
-    def test_delete_with_related_data(self, db_operations):
+    def test_delete_with_related_data(self, module_db_operations):
         """Test delete operations with related data."""
         # First soft delete a product
-        db_operations.soft_delete("test_products", 1)
+        module_db_operations.soft_delete("test_products", 1)
         
         # Verify orders still exist
-        orders = db_operations.execute_query("SELECT * FROM test_orders WHERE product_id = 1")
+        orders = module_db_operations.execute_query("SELECT * FROM test_orders WHERE product_id = 1")
         assert len(orders) == 2
         
         # Then perform cascade delete
         cascade_config = [
             {"table": "test_orders", "foreign_key": "product_id", "cascade_type": "delete"}
         ]
-        results = db_operations.cascade_delete("test_products", 1, cascade_config)
+        results = module_db_operations.cascade_delete("test_products", 1, cascade_config)
         
         # Verify all related data is deleted
-        products = db_operations.execute_query("SELECT * FROM test_products WHERE id = 1")
-        orders = db_operations.execute_query("SELECT * FROM test_orders WHERE product_id = 1")
+        products = module_db_operations.execute_query("SELECT * FROM test_products WHERE id = 1")
+        orders = module_db_operations.execute_query("SELECT * FROM test_orders WHERE product_id = 1")
         assert len(products) == 0
         assert len(orders) == 0 

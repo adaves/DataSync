@@ -8,8 +8,12 @@ from pathlib import Path
 from datasync.database.operations import DatabaseOperations
 from datasync.database.validation import DatabaseValidation
 from datasync.database.monitoring import DatabaseMonitor
+from datasync.utils.path_utils import normalize_path
 import pyodbc
+from tests.fixtures.database import temp_db_path, db_operations, db_validation, db_monitor
 from tests.fixtures.mock_database.create_mock_db import create_mock_database
+from datetime import datetime
+from datasync.database.sql_syntax import AccessSQLSyntax
 
 @pytest.fixture
 def mock_db_path(tmp_path):
@@ -36,9 +40,271 @@ def db_monitor():
 class TestDatabaseOperations:
     """Test suite for DatabaseOperations class."""
     
+    def test_connection_management(self, db_operations):
+        """Test database connection management."""
+        try:
+            db_operations.connect()
+            assert db_operations.conn is not None
+            assert db_operations.cursor is not None
+        finally:
+            db_operations.close()
+    
+    def test_table_operations(self, db_operations):
+        """Test table creation and management."""
+        try:
+            db_operations.connect()
+            
+            # Create a test table
+            create_table_sql = """
+            CREATE TABLE TestTable (
+                ID COUNTER PRIMARY KEY,
+                Name TEXT(50),
+                Value DOUBLE,
+                CreatedDate DATETIME
+            )
+            """
+            db_operations.execute_query(create_table_sql)
+            
+            # Verify table was created
+            tables = db_operations.get_tables()
+            assert "TestTable" in tables
+            
+            # Drop the table
+            db_operations.execute_query("DROP TABLE TestTable")
+            
+            # Verify table was dropped
+            tables = db_operations.get_tables()
+            assert "TestTable" not in tables
+            
+        finally:
+            db_operations.close()
+    
+    def test_insert_operations(self, db_operations):
+        """Test record insertion operations."""
+        try:
+            db_operations.connect()
+            
+            # Create a test table
+            create_table_sql = """
+            CREATE TABLE TestInsert (
+                ID COUNTER PRIMARY KEY,
+                Name TEXT(50),
+                Value DOUBLE,
+                CreatedDate DATETIME
+            )
+            """
+            db_operations.execute_query(create_table_sql)
+            
+            # Test single record insertion
+            record = {
+                "Name": "Test Insert",
+                "Value": 42.5,
+                "CreatedDate": datetime.now()
+            }
+            
+            result = db_operations.insert_record("TestInsert", record)
+            assert result == 1
+            
+            # Verify the record was inserted
+            results = db_operations.execute_query("SELECT * FROM TestInsert")
+            assert len(results) == 1
+            assert results[0]["Name"] == "Test Insert"
+            assert results[0]["Value"] == 42.5
+            
+            # Test batch insertion
+            records = [
+                {"Name": f"Test {i}", "Value": i * 10.0, "CreatedDate": datetime.now()}
+                for i in range(1, 6)
+            ]
+            
+            result = db_operations.batch_insert("TestInsert", records, batch_size=2)
+            assert result == 5
+            
+            # Verify all records were inserted
+            results = db_operations.execute_query("SELECT * FROM TestInsert ORDER BY ID")
+            assert len(results) == 6
+            for i, record in enumerate(results[1:], 1):
+                assert record["Name"] == f"Test {i}"
+                assert record["Value"] == i * 10.0
+            
+        finally:
+            # Clean up
+            if db_operations.conn:
+                db_operations.execute_query("DROP TABLE TestInsert")
+                db_operations.close()
+    
+    def test_update_operations(self, db_operations):
+        """Test record update operations."""
+        try:
+            db_operations.connect()
+            
+            # Create a test table
+            create_table_sql = """
+            CREATE TABLE TestUpdate (
+                ID COUNTER PRIMARY KEY,
+                Name TEXT(50),
+                Value DOUBLE,
+                Status TEXT(20)
+            )
+            """
+            db_operations.execute_query(create_table_sql)
+            
+            # Insert test data
+            db_operations.execute_query("""
+                INSERT INTO TestUpdate (Name, Value, Status)
+                VALUES ('Test1', 10.0, 'active'),
+                       ('Test2', 20.0, 'inactive'),
+                       ('Test3', 30.0, 'active')
+            """)
+            
+            # Test single record update
+            record = {
+                "ID": 1,
+                "Name": "Updated Test1",
+                "Value": 15.0
+            }
+            result = db_operations.update_record("TestUpdate", record, ["ID"])
+            assert result == 1
+            
+            # Verify update
+            results = db_operations.execute_query("SELECT * FROM TestUpdate WHERE ID = 1")
+            assert len(results) == 1
+            assert results[0]["Name"] == "Updated Test1"
+            assert results[0]["Value"] == 15.0
+            assert results[0]["Status"] == "active"  # Unchanged field
+            
+            # Test batch update
+            records = [
+                {"ID": 2, "Status": "active"},
+                {"ID": 3, "Status": "inactive"}
+            ]
+            result = db_operations.batch_update("TestUpdate", records, ["ID"])
+            assert result == 2
+            
+            # Verify updates
+            results = db_operations.execute_query("SELECT * FROM TestUpdate ORDER BY ID")
+            assert results[1]["Status"] == "active"
+            assert results[2]["Status"] == "inactive"
+            
+        finally:
+            # Clean up
+            if db_operations.conn:
+                db_operations.execute_query("DROP TABLE TestUpdate")
+                db_operations.close()
+    
+    def test_delete_operations(self, db_operations):
+        """Test record deletion operations."""
+        try:
+            db_operations.connect()
+            
+            # Create a test table
+            create_table_sql = """
+            CREATE TABLE TestDelete (
+                ID COUNTER PRIMARY KEY,
+                Name TEXT(50),
+                Status TEXT(20),
+                DeletedAt DATETIME
+            )
+            """
+            db_operations.execute_query(create_table_sql)
+            
+            # Insert test data
+            db_operations.execute_query("""
+                INSERT INTO TestDelete (Name, Status)
+                VALUES ('Test1', 'active'),
+                       ('Test2', 'inactive'),
+                       ('Test3', 'active')
+            """)
+            
+            # Test delete with conditions
+            result = db_operations.delete_records("TestDelete", {"Status": "inactive"})
+            assert result == 1
+            
+            # Verify deletion
+            results = db_operations.execute_query("SELECT * FROM TestDelete")
+            assert len(results) == 2
+            assert all(r["Status"] == "active" for r in results)
+            
+            # Test soft delete
+            result = db_operations.soft_delete("TestDelete", 1)
+            assert result is True
+            
+            # Verify soft delete
+            results = db_operations.execute_query("SELECT * FROM TestDelete WHERE ID = 1")
+            assert len(results) == 1
+            assert results[0]["DeletedAt"] is not None
+            
+        finally:
+            # Clean up
+            if db_operations.conn:
+                db_operations.execute_query("DROP TABLE TestDelete")
+                db_operations.close()
+    
+    def test_transaction_operations(self, db_operations):
+        """Test transaction management operations."""
+        try:
+            db_operations.connect()
+            
+            # Create a test table
+            create_table_sql = """
+            CREATE TABLE TestTransaction (
+                ID COUNTER PRIMARY KEY,
+                Name TEXT(50) NOT NULL,
+                Value DOUBLE
+            )
+            """
+            db_operations.execute_query(create_table_sql)
+            
+            # Test transaction rollback
+            db_operations.begin_transaction()
+            
+            # Insert valid data
+            db_operations.execute_query(
+                "INSERT INTO TestTransaction (Name, Value) VALUES (?, ?)",
+                ("Valid", 42.5)
+            )
+            
+            # Try to insert invalid data (should fail)
+            with pytest.raises(pyodbc.Error):
+                db_operations.execute_query(
+                    "INSERT INTO TestTransaction (Name, Value) VALUES (?, ?)",
+                    (None, 99.9)  # This should fail due to NOT NULL constraint
+                )
+            
+            # Rollback the transaction
+            db_operations.rollback_transaction()
+            
+            # Verify no data was inserted
+            results = db_operations.execute_query("SELECT * FROM TestTransaction")
+            assert len(results) == 0
+            
+            # Test successful transaction
+            db_operations.begin_transaction()
+            
+            # Insert valid data
+            db_operations.execute_query(
+                "INSERT INTO TestTransaction (Name, Value) VALUES (?, ?)",
+                ("Valid", 42.5)
+            )
+            
+            # Commit the transaction
+            db_operations.commit_transaction()
+            
+            # Verify data was inserted
+            results = db_operations.execute_query("SELECT * FROM TestTransaction")
+            assert len(results) == 1
+            assert results[0]["Name"] == "Valid"
+            assert results[0]["Value"] == 42.5
+            
+        finally:
+            # Clean up
+            if db_operations.conn:
+                db_operations.execute_query("DROP TABLE TestTransaction")
+                db_operations.close()
+
     def test_initialization(self, db_operations, mock_db_path):
         """Test database operations initialization."""
-        assert db_operations.db_path == mock_db_path
+        assert db_operations.db_path == normalize_path(mock_db_path)
         assert db_operations.conn is None
         assert db_operations.cursor is None
     
@@ -47,6 +313,8 @@ class TestDatabaseOperations:
         conn_str = db_operations.conn_str
         assert "DRIVER={Microsoft Access Driver (*.mdb, *.accdb)}" in conn_str
         assert str(db_operations.db_path.absolute()) in conn_str
+        # Verify proper path escaping
+        assert "\\\\" in conn_str  # Should have double backslashes for ODBC
     
     def test_get_tables(self, db_operations, mocker):
         """Test getting list of tables."""
@@ -854,3 +1122,201 @@ class TestDatabaseOperations:
         result = db_operations.execute_query("SELECT * FROM test_rollback")
         assert len(result) == 1
         assert result[0]["id"] == 1 
+
+    def test_create_table(self, db_operations):
+        """Test creating a table with proper Access syntax."""
+        columns = {
+            'id': 'INTEGER',
+            'name': 'TEXT',
+            'value': 'DECIMAL',
+            'created_date': 'DATETIME'
+        }
+        
+        try:
+            db_operations.create_table('test_create', columns, ['id'])
+            
+            # Verify table was created
+            tables = db_operations.get_tables()
+            assert 'test_create' in tables
+            
+            # Verify column types
+            columns = db_operations.get_table_columns('test_create')
+            assert 'id' in columns
+            assert 'name' in columns
+            assert 'value' in columns
+            assert 'created_date' in columns
+            
+        finally:
+            db_operations.execute_query('DROP TABLE test_create')
+            
+    def test_alter_table(self, db_operations):
+        """Test altering a table with proper Access syntax."""
+        # Create initial table
+        columns = {
+            'id': 'INTEGER',
+            'name': 'TEXT'
+        }
+        db_operations.create_table('test_alter', columns, ['id'])
+        
+        try:
+            # Add new column
+            add_columns = {
+                'value': 'DECIMAL',
+                'created_date': 'DATETIME'
+            }
+            db_operations.alter_table('test_alter', add_columns=add_columns)
+            
+            # Verify new columns
+            columns = db_operations.get_table_columns('test_alter')
+            assert 'value' in columns
+            assert 'created_date' in columns
+            
+            # Drop column
+            db_operations.alter_table('test_alter', drop_columns=['value'])
+            
+            # Verify column was dropped
+            columns = db_operations.get_table_columns('test_alter')
+            assert 'value' not in columns
+            
+        finally:
+            db_operations.execute_query('DROP TABLE test_alter')
+            
+    def test_add_foreign_key(self, db_operations):
+        """Test adding a foreign key with proper Access syntax."""
+        # Create parent table
+        parent_columns = {
+            'id': 'INTEGER',
+            'name': 'TEXT'
+        }
+        db_operations.create_table('test_parent', parent_columns, ['id'])
+        
+        # Create child table
+        child_columns = {
+            'id': 'INTEGER',
+            'parent_id': 'INTEGER',
+            'value': 'TEXT'
+        }
+        db_operations.create_table('test_child', child_columns, ['id'])
+        
+        try:
+            # Add foreign key
+            db_operations.add_foreign_key('test_child', 'parent_id', 'test_parent', 'id')
+            
+            # Verify foreign key was added
+            # Note: Access doesn't provide a direct way to query foreign keys
+            # We'll verify by attempting to insert invalid data
+            db_operations.insert_data('test_parent', {'id': 1, 'name': 'Test'})
+            
+            # Valid foreign key
+            db_operations.insert_data('test_child', {'id': 1, 'parent_id': 1, 'value': 'Test'})
+            
+            # Invalid foreign key should fail
+            with pytest.raises(Exception):
+                db_operations.insert_data('test_child', {'id': 2, 'parent_id': 999, 'value': 'Test'})
+                
+        finally:
+            db_operations.execute_query('DROP TABLE test_child')
+            db_operations.execute_query('DROP TABLE test_parent')
+            
+    def test_read_records_with_limit(self, db_operations):
+        """Test reading records with LIMIT using Access TOP syntax."""
+        # Create test table
+        columns = {
+            'id': 'INTEGER',
+            'name': 'TEXT',
+            'value': 'DECIMAL'
+        }
+        db_operations.create_table('test_limit', columns, ['id'])
+        
+        try:
+            # Insert test data
+            for i in range(10):
+                db_operations.insert_data('test_limit', {
+                    'id': i + 1,
+                    'name': f'Test {i + 1}',
+                    'value': float(i + 1)
+                })
+            
+            # Test with limit
+            results = db_operations.read_records('test_limit', limit=5)
+            assert len(results) == 5
+            
+            # Test with limit and offset (should raise NotImplementedError)
+            with pytest.raises(NotImplementedError):
+                db_operations.read_records('test_limit', limit=5, offset=5)
+                
+        finally:
+            db_operations.execute_query('DROP TABLE test_limit')
+            
+    def test_update_record(self, db_operations):
+        """Test updating a record with proper Access syntax."""
+        # Create test table
+        columns = {
+            'id': 'INTEGER',
+            'name': 'TEXT',
+            'value': 'DECIMAL',
+            'status': 'TEXT'
+        }
+        db_operations.create_table('test_update', columns, ['id'])
+        
+        try:
+            # Insert test record
+            db_operations.insert_data('test_update', {
+                'id': 1,
+                'name': 'Test',
+                'value': 10.5,
+                'status': 'active'
+            })
+            
+            # Update record
+            result = db_operations.update_data(
+                'test_update',
+                {'name': 'Updated', 'value': 20.75, 'status': 'inactive'},
+                'id = ?',
+                {'id': 1}
+            )
+            assert result == 1
+            
+            # Verify update
+            results = db_operations.read_records('test_update', {'id': 1})
+            assert len(results) == 1
+            assert results[0]['name'] == 'Updated'
+            assert results[0]['value'] == 20.75
+            assert results[0]['status'] == 'inactive'
+            
+        finally:
+            db_operations.execute_query('DROP TABLE test_update')
+            
+    def test_delete_data(self, db_operations):
+        """Test deleting data with proper Access syntax."""
+        # Create test table
+        columns = {
+            'id': 'INTEGER',
+            'name': 'TEXT',
+            'value': 'DECIMAL'
+        }
+        db_operations.create_table('test_delete', columns, ['id'])
+        
+        try:
+            # Insert test data
+            for i in range(5):
+                db_operations.insert_data('test_delete', {
+                    'id': i + 1,
+                    'name': f'Test {i + 1}',
+                    'value': float(i + 1)
+                })
+            
+            # Delete records
+            result = db_operations.delete_data(
+                'test_delete',
+                'value > ?',
+                {'value': 3}
+            )
+            assert result == 2
+            
+            # Verify deletion
+            results = db_operations.read_records('test_delete')
+            assert len(results) == 3
+            
+        finally:
+            db_operations.execute_query('DROP TABLE test_delete') 
