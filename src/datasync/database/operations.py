@@ -4,16 +4,19 @@ This module handles all direct database operations including connection manageme
 CRUD operations, and table management.
 """
 
+import os
 import pyodbc
 import pandas as pd
 from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional, Union
 import logging
-from datasync.utils.path_utils import normalize_path, format_connection_string_path, is_valid_database_path
-from .transaction import TransactionManager
-from .sql_syntax import AccessSQLSyntax
-from ..utils.error_handling import DatabaseError, handle_database_error
+from datasync.database.exceptions import DatabaseError
+from datasync.database.transaction import TransactionManager
+from datasync.utils.logger import setup_logger
+from datasync.utils.mock_database import create_mock_database
+from ..utils.error_handling import handle_database_error
+from ..utils.path_utils import normalize_path
 
 class DatabaseOperations:
     """Handles core database operations for Microsoft Access databases."""
@@ -26,96 +29,124 @@ class DatabaseOperations:
             db_path: Path to the Access database file
         """
         self.db_path = normalize_path(db_path)
-        if not is_valid_database_path(self.db_path):
-            raise FileNotFoundError(f"Database file not found or invalid: {db_path}")
-        
-        # Create connection string with proper path handling
-        self.conn_str = (
-            r'DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};'
-            f'DBQ={format_connection_string_path(self.db_path)};'
-        )
-        
+        if not os.path.exists(os.path.dirname(self.db_path)):
+            os.makedirs(os.path.dirname(self.db_path), exist_ok=True)
+            
         # Initialize connection attributes
         self.conn = None
         self.cursor = None
         self.logger = logging.getLogger(__name__)
-        self.transaction_manager = TransactionManager(self.conn, self.logger)
-        self.sql_syntax = AccessSQLSyntax()
+        self.transaction_manager = None
+        self._is_connected = False
+    
+    @property
+    def conn_str(self) -> str:
+        """
+        Generate the connection string for the database.
+        
+        Returns:
+            str: The formatted connection string
+        """
+        db_path = str(self.db_path.absolute()).replace("\\", "\\\\")
+        return (
+            "DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};"
+            f"DBQ={db_path};"
+            "ExtendedAnsiSQL=1;"
+            "UID=Admin;"
+            "PWD=;"
+        )
+    
+    @property
+    def is_connected(self) -> bool:
+        """Check if the database is currently connected."""
+        return self._is_connected and self.conn is not None and self.cursor is not None
     
     def connect(self) -> None:
-        """Establish connection to the database."""
+        """Connect to the database."""
+        if self.is_connected:
+            return
+
         try:
+            # Create database if it doesn't exist
+            if not os.path.exists(self.db_path):
+                create_mock_database(self.db_path)
+            
             self.conn = pyodbc.connect(self.conn_str)
             self.cursor = self.conn.cursor()
-            self.logger.info("Successfully connected to the database")
-        except pyodbc.Error as e:
-            self.logger.error(f"Error connecting to database: {e}")
-            self.logger.error(f"Connection string used: {self.conn_str}")
-            raise
+            self.transaction_manager = TransactionManager(self)
+            self._is_connected = True
+            self.logger.info(f"Connected to database: {self.db_path}")
+        except Exception as e:
+            self._is_connected = False
+            self.conn = None
+            self.cursor = None
+            self.logger.error(f"Failed to connect to database: {str(e)}")
+            raise DatabaseError(f"Failed to connect to database: {str(e)}")
     
     def close(self) -> None:
         """Close the database connection."""
-        if self.conn:
-            self.conn.close()
-            self.conn = None
-            self.cursor = None
-            self.logger.info("Database connection closed")
+        try:
+            if self.cursor:
+                self.cursor.close()
+                self.cursor = None
+            if self.conn:
+                if not self.in_transaction:  # Only commit if not in a transaction
+                    self.conn.commit()
+                self.conn.close()
+                self.conn = None
+                self.transaction_manager = None
+                self._is_connected = False
+                self.logger.info("Database connection closed")
+        except Exception as e:
+            self.logger.error(f"Error closing database connection: {str(e)}")
+            raise DatabaseError(f"Error closing database connection: {str(e)}")
+    
+    @property
+    def in_transaction(self) -> bool:
+        """Check if currently in a transaction."""
+        return self.transaction_manager.in_transaction if self.transaction_manager else False
+    
+    def begin_transaction(self) -> None:
+        """Begin a new transaction."""
+        if not self.is_connected:
+            self.connect()
+        if not self.in_transaction:
+            self.transaction_manager.begin()
+            self.logger.debug("Transaction started")
+    
+    def commit_transaction(self) -> None:
+        """Commit the current transaction."""
+        if self.in_transaction:
+            self.transaction_manager.commit()
+            self.logger.debug("Transaction committed")
+    
+    def rollback_transaction(self) -> None:
+        """Rollback the current transaction."""
+        if self.in_transaction:
+            self.transaction_manager.rollback()
+            self.logger.debug("Transaction rolled back")
     
     def get_tables(self) -> List[str]:
         """
-        Get list of all tables in the database.
+        Get a list of all tables in the database.
         
         Returns:
             List of table names
         """
         if not self.cursor:
             self.connect()
-        
-        tables = []
-        for row in self.cursor.tables():
-            if row.table_type == 'TABLE':
-                tables.append(row.table_name)
-        return tables
-    
-    @property
-    def in_transaction(self) -> bool:
-        """Check if currently in a transaction."""
-        return self.transaction_manager.in_transaction
-    
-    def begin_transaction(self) -> None:
-        """Begin a new transaction."""
-        self.transaction_manager.begin()
-    
-    def commit_transaction(self) -> None:
-        """Commit the current transaction."""
-        self.transaction_manager.commit()
-    
-    def rollback_transaction(self) -> None:
-        """Rollback the current transaction."""
-        self.transaction_manager.rollback()
-    
-    @handle_database_error
-    def execute_query(self, query: str, params: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
-        """
-        Execute a query with proper transaction handling.
-        
-        Args:
-            query: SQL query to execute
-            params: Optional parameters for the query
             
-        Returns:
-            List of dictionaries containing query results
+        query = """
+            SELECT Name 
+            FROM MSysObjects 
+            WHERE Type=1 AND Flags=0
         """
-        cursor = self.conn.cursor(dictionary=True)
-        try:
-            cursor.execute(query, params or {})
-            return cursor.fetchall()
-        finally:
-            cursor.close()
-    
+        results = self.execute_query(query)
+        return [row['Name'] for row in results]
+
     def get_table_columns(self, table_name: str) -> List[str]:
         """
-        Get the column names from a table.
+        Get a list of column names for a table.
         
         Args:
             table_name: Name of the table
@@ -123,15 +154,166 @@ class DatabaseOperations:
         Returns:
             List of column names
         """
+        if not self.cursor:
+            self.connect()
+            
+        query = f"SELECT TOP 1 * FROM [{table_name}]"
+        self.cursor.execute(query)
+        return [column[0] for column in self.cursor.description]
+
+    def table_exists(self, table_name: str) -> bool:
+        """
+        Check if a table exists in the database.
+        
+        Args:
+            table_name: Name of the table to check
+            
+        Returns:
+            True if the table exists, False otherwise
+        """
+        return table_name in self.get_tables()
+
+    def drop_table(self, table_name: str) -> None:
+        """
+        Drop a table from the database.
+        
+        Args:
+            table_name: Name of the table to drop
+        """
+        if not self.cursor:
+            self.connect()
+            
+        if not self.table_exists(table_name):
+            raise DatabaseError(f"Table '{table_name}' does not exist")
+            
+        query = f"DROP TABLE [{table_name}]"
+        self.execute_query(query)
+        if not self.in_transaction:
+            self.conn.commit()
+
+    def truncate_table(self, table_name: str) -> None:
+        """
+        Remove all records from a table.
+        
+        Args:
+            table_name: Name of the table to truncate
+        """
+        if not self.cursor:
+            self.connect()
+            
+        if not self.table_exists(table_name):
+            raise DatabaseError(f"Table '{table_name}' does not exist")
+            
+        query = f"DELETE FROM [{table_name}]"
+        self.execute_query(query)
+        if not self.in_transaction:
+            self.conn.commit()
+
+    def get_table_info(self, table_name: str) -> Dict[str, Any]:
+        """
+        Get detailed information about a table.
+        
+        Args:
+            table_name: Name of the table
+            
+        Returns:
+            Dictionary containing table information
+        """
+        if not self.cursor:
+            self.connect()
+            
+        if not self.table_exists(table_name):
+            raise DatabaseError(f"Table '{table_name}' does not exist")
+            
+        # Get column information
+        columns = []
+        self.cursor.execute(f"SELECT TOP 1 * FROM [{table_name}]")
+        for column in self.cursor.description:
+            columns.append({
+                'name': column[0],
+                'type': column[1].__name__,
+                'nullable': bool(column[6]),
+                'size': column[3]
+            })
+            
+        # Get record count
+        count_query = f"SELECT COUNT(*) as count FROM [{table_name}]"
+        count_result = self.execute_query(count_query)
+        record_count = count_result[0]['count']
+        
+        return {
+            'name': table_name,
+            'columns': columns,
+            'record_count': record_count
+        }
+
+    def verify_record_exists(self, table_name: str, conditions: Dict[str, Any]) -> bool:
+        """
+        Verify that a record exists in the table.
+        
+        Args:
+            table_name: Name of the table
+            conditions: Dictionary of column names and values to check
+            
+        Returns:
+            True if the record exists, False otherwise
+        """
+        if not self.cursor:
+            self.connect()
+            
+        where_clause = ' AND '.join([f'[{col}] = ?' for col in conditions.keys()])
+        values = list(conditions.values())
+        
+        query = f"""
+            SELECT COUNT(*) as count 
+            FROM [{table_name}] 
+            WHERE {where_clause}
+        """
+        
+        result = self.execute_query(query, values)
+        return result[0]['count'] > 0
+
+    def execute_query(self, query: str, params: Optional[Union[tuple, List[Any]]] = None) -> Any:
+        """
+        Execute a SQL query and return the results.
+        
+        Args:
+            query: SQL query to execute
+            params: Optional parameters for the query
+            
+        Returns:
+            Query results (list of dictionaries for SELECT queries, row count for others)
+        """
+        if not self.cursor:
+            self.connect()
+            
         try:
-            query = f"SELECT * FROM [{table_name}] WHERE 1=0"  # Get structure without data
-            self.cursor.execute(query)
-            columns = [column[0] for column in self.cursor.description]
-            return columns
+            if params:
+                self.cursor.execute(query, params)
+            else:
+                self.cursor.execute(query)
+                
+            # For SELECT queries, return results as list of dictionaries
+            if query.strip().upper().startswith('SELECT'):
+                columns = [column[0] for column in self.cursor.description]
+                return [dict(zip(columns, row)) for row in self.cursor.fetchall()]
+            
+            # For other queries (INSERT, UPDATE, DELETE), return affected row count
+            return self.cursor.rowcount
+            
         except Exception as e:
-            self.logger.error(f"Error getting table columns: {e}")
-            raise
-    
+            if self.in_transaction:
+                self.rollback_transaction()
+            raise DatabaseError(f"Query execution failed: {str(e)}")
+
+    def __enter__(self) -> 'DatabaseOperations':
+        """Context manager entry."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Context manager exit."""
+        self.close()
+
     def read_table(self, table_name: str) -> pd.DataFrame:
         """
         Read an entire table into a pandas DataFrame.
@@ -193,101 +375,101 @@ class DatabaseOperations:
             )
 
     @handle_database_error
-    def count_records(self, table_name: str, year: int, date_column: str = 'Time') -> int:
+    def count_records(self, table_name: str, year: int, date_column: str = 'date_field') -> int:
         """
         Count records for a specific year in a table.
         
         Args:
             table_name: Name of the table
             year: Year to count records for
-            date_column: Name of the date column
+            date_column: Name of the date column (defaults to 'date_field')
             
         Returns:
             Number of records found
-            
-        Raises:
-            DatabaseError: If the table or column doesn't exist
         """
+        if not self.cursor:
+            self.connect()
+            
         # Verify table exists
         if table_name not in self.get_tables():
             raise DatabaseError(f"Table '{table_name}' does not exist")
-        
+            
         # Verify column exists
         columns = self.get_table_columns(table_name)
         if date_column not in columns:
             raise DatabaseError(f"Column '{date_column}' not found in table '{table_name}'")
-        
+            
         query = f"""
             SELECT COUNT(*) as record_count 
             FROM [{table_name}] 
             WHERE YEAR([{date_column}]) = ?
         """
-        result = self.execute_query(query, [year])
-        return result[0]['record_count'] if result else 0
+        
+        result = self.execute_query(query, (year,))
+        return result[0]['record_count']
 
     @handle_database_error
-    def delete_year_data(self, table_name: str, year: int, date_column: str = 'Time') -> int:
+    def delete_year_data(self, table_name: str, year: int, 
+                        date_column: str = 'date_field',
+                        batch_size: int = 1000) -> int:
         """
         Delete all records for a specific year from a table.
         
         Args:
-            table_name: Name of the table
+            table_name: Name of the table to delete from
             year: Year to delete records for
-            date_column: Name of the date column
+            date_column: Name of the date column (defaults to 'date_field')
+            batch_size: Number of records to delete in each batch
             
         Returns:
             Number of records deleted
-            
-        Raises:
-            DatabaseError: If no records exist for the specified year
         """
-        # First count records to be deleted
+        # First count the records
         count = self.count_records(table_name, year, date_column)
         if count == 0:
-            raise DatabaseError(
-                f"No records found for year {year} in table '{table_name}'",
-                details={
-                    'table': table_name,
-                    'year': year,
-                    'date_column': date_column
-                }
-            )
+            raise ValueError(f"No records found for year {year} in table {table_name}")
+            
+        self.logger.info(f"Starting batch deletion of {count:,} records")
+        total_deleted = 0
         
-        # Begin transaction
-        self.begin_transaction()
-        try:
-            query = f"""
-                DELETE FROM [{table_name}]
-                WHERE YEAR([{date_column}]) = ?
-            """
-            self.execute_query(query, [year])
-            
-            # Verify deletion count matches expected count
-            deleted = self.cursor.rowcount
-            if deleted != count:
-                raise DatabaseError(
-                    f"Deletion count mismatch. Expected {count}, but deleted {deleted} records.",
-                    details={
-                        'table': table_name,
-                        'year': year,
-                        'expected_count': count,
-                        'actual_deleted': deleted
-                    }
-                )
-            
-            self.commit_transaction()
-            return deleted
-            
-        except Exception as e:
-            self.rollback_transaction()
-            raise DatabaseError(
-                f"Failed to delete records for year {year}: {str(e)}",
-                details={
-                    'table': table_name,
-                    'year': year,
-                    'date_column': date_column
-                }
+        # Process in batches to avoid lock count issues
+        while total_deleted < count:
+            try:
+                # Begin transaction for this batch
+                self.begin_transaction()
+                
+                # Delete records in batches
+                query = f"""
+                    DELETE TOP {batch_size} 
+                    FROM [{table_name}]
+                    WHERE YEAR([{date_column}]) = ?
+                """
+                
+                # Execute the delete
+                deleted = self.execute_query(query, (year,))
+                if deleted == 0:
+                    break  # No more records to delete
+                    
+                total_deleted += deleted
+                self.logger.info(f"Deleted batch of {deleted} records (total: {total_deleted:,})")
+                
+                # Commit this batch
+                self.commit_transaction()
+                
+            except Exception as e:
+                self.rollback_transaction()
+                self.logger.error(f"Error deleting batch: {str(e)}")
+                raise
+                
+        # Final verification
+        remaining = self.count_records(table_name, year, date_column)
+        if remaining > 0:
+            raise RuntimeError(
+                f"Deletion incomplete: {remaining} records still exist for year {year}"
             )
+            
+        self.logger.info(f"Successfully deleted {total_deleted:,} records for year {year}")
+        return total_deleted
 
     def cleanup_temp_tables(self) -> None:
         """Clean up any leftover temporary tables."""
@@ -327,6 +509,179 @@ class DatabaseOperations:
         finally:
             cursor.close()
 
+    @handle_database_error
+    def insert_record(self, table_name: str, record: Dict[str, Any]) -> int:
+        """
+        Insert a single record into the specified table.
+        
+        Args:
+            table_name: Name of the table to insert into
+            record: Dictionary of column names and values
+            
+        Returns:
+            int: The ID of the inserted record
+        """
+        if not self.is_connected:
+            self.connect()
+            
+        try:
+            # Convert data types to Access-compatible formats
+            for key, value in record.items():
+                if isinstance(value, datetime):
+                    record[key] = value.strftime('%Y-%m-%d %H:%M:%S')
+                elif isinstance(value, bool):
+                    record[key] = -1 if value else 0
+                elif value is None:
+                    record[key] = None
+                    
+            columns = ', '.join(record.keys())
+            placeholders = ', '.join(['?' for _ in record])
+            query = f"INSERT INTO {table_name} ({columns}) VALUES ({placeholders})"
+            
+            self.cursor.execute(query, list(record.values()))
+            self.cursor.execute("SELECT @@IDENTITY")
+            record_id = self.cursor.fetchone()[0]
+            
+            if not self.in_transaction:
+                self.conn.commit()
+                
+            return record_id
+        except Exception as e:
+            if self.in_transaction:
+                self.rollback_transaction()
+            raise DatabaseError(f"Failed to insert record: {str(e)}")
+    
+    @handle_database_error
+    def update_record(self, table_name: str, record: Dict[str, Any], 
+                     condition: Optional[str] = None) -> int:
+        """
+        Update records in the specified table.
+        
+        Args:
+            table_name: Name of the table to update
+            record: Dictionary of column names and new values
+            condition: Optional WHERE clause condition
+            
+        Returns:
+            int: Number of records updated
+        """
+        if not self.is_connected:
+            self.connect()
+            
+        try:
+            # Convert data types to Access-compatible formats
+            for key, value in record.items():
+                if isinstance(value, datetime):
+                    record[key] = value.strftime('%Y-%m-%d %H:%M:%S')
+                elif isinstance(value, bool):
+                    record[key] = -1 if value else 0
+                elif value is None:
+                    record[key] = None
+                    
+            set_clause = ', '.join([f"{k} = ?" for k in record.keys()])
+            query = f"UPDATE {table_name} SET {set_clause}"
+            
+            if condition:
+                query += f" WHERE {condition}"
+                
+            self.cursor.execute(query, list(record.values()))
+            affected_rows = self.cursor.rowcount
+            
+            if not self.in_transaction:
+                self.conn.commit()
+                
+            return affected_rows
+        except Exception as e:
+            if self.in_transaction:
+                self.rollback_transaction()
+            raise DatabaseError(f"Failed to update record: {str(e)}")
+    
+    @handle_database_error
+    def delete_records(self, table_name: str, condition: Optional[str] = None,
+                      soft_delete: bool = False, cascade: bool = False) -> int:
+        """
+        Delete records from the specified table.
+        
+        Args:
+            table_name: Name of the table to delete from
+            condition: Optional WHERE clause condition
+            soft_delete: If True, mark records as deleted instead of removing them
+            cascade: If True, delete related records in other tables
+            
+        Returns:
+            int: Number of records deleted
+        """
+        if not self.is_connected:
+            self.connect()
+            
+        try:
+            if soft_delete:
+                # Update the is_deleted flag instead of deleting
+                query = f"UPDATE {table_name} SET is_deleted = -1"
+                if condition:
+                    query += f" WHERE {condition}"
+            else:
+                if cascade:
+                    # Get foreign key relationships
+                    fk_info = self.get_foreign_keys(table_name)
+                    for fk in fk_info:
+                        # Delete related records first
+                        self.delete_records(fk['referenced_table'], 
+                                          f"{fk['referenced_column']} IN (SELECT {fk['column']} FROM {table_name} WHERE {condition})")
+                
+                query = f"DELETE FROM {table_name}"
+                if condition:
+                    query += f" WHERE {condition}"
+                    
+            self.cursor.execute(query)
+            affected_rows = self.cursor.rowcount
+            
+            if not self.in_transaction:
+                self.conn.commit()
+                
+            return affected_rows
+        except Exception as e:
+            if self.in_transaction:
+                self.rollback_transaction()
+            raise DatabaseError(f"Failed to delete records: {str(e)}")
+    
+    @handle_database_error
+    def get_foreign_keys(self, table_name: str) -> List[Dict[str, str]]:
+        """
+        Get foreign key relationships for a table.
+        
+        Args:
+            table_name: Name of the table to get foreign keys for
+            
+        Returns:
+            List of dictionaries containing foreign key information
+        """
+        if not self.is_connected:
+            self.connect()
+            
+        try:
+            query = """
+                SELECT 
+                    fk.name AS fk_name,
+                    OBJECT_NAME(fk.parent_object_id) AS table_name,
+                    c1.name AS column_name,
+                    OBJECT_NAME(fk.referenced_object_id) AS referenced_table,
+                    c2.name AS referenced_column
+                FROM 
+                    sys.foreign_keys AS fk
+                    INNER JOIN sys.foreign_key_columns AS fkc ON fk.object_id = fkc.constraint_object_id
+                    INNER JOIN sys.columns AS c1 ON fkc.parent_object_id = c1.object_id AND fkc.parent_column_id = c1.column_id
+                    INNER JOIN sys.columns AS c2 ON fkc.referenced_object_id = c2.object_id AND fkc.referenced_column_id = c2.column_id
+                WHERE 
+                    OBJECT_NAME(fk.parent_object_id) = ?
+            """
+            self.cursor.execute(query, [table_name])
+            return [dict(zip([column[0] for column in self.cursor.description], row))
+                   for row in self.cursor.fetchall()]
+        except Exception as e:
+            raise DatabaseError(f"Failed to get foreign keys: {str(e)}")
+
+    @handle_database_error
     def batch_insert(self, table_name: str, records: List[Dict[str, Any]], 
                     batch_size: int = 1000) -> int:
         """
@@ -350,6 +705,8 @@ class DatabaseOperations:
         temp_table = None
         
         try:
+            self.begin_transaction()  # Start transaction
+            
             # Create a temporary table for batch processing
             temp_table = f"temp_batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             columns = list(records[0].keys())
@@ -389,14 +746,14 @@ class DatabaseOperations:
                 SELECT * FROM [{temp_table}]
             """
             self.execute_query(copy_query)
-            self.conn.commit()
+            self.commit_transaction()  # Commit transaction
             
             self.logger.info(f"Successfully inserted {total_inserted} records into {table_name}")
             return total_inserted
             
-        except pyodbc.Error as e:
+        except Exception as e:
+            self.rollback_transaction()  # Rollback on error
             self.logger.error(f"Error during batch insert into {table_name}: {e}")
-            self.conn.rollback()
             raise
             
         finally:
@@ -426,7 +783,7 @@ class DatabaseOperations:
         try:
             # Build WHERE clause for key columns
             where_clause = ' AND '.join([f'[{col}] = ?' for col in key_columns])
-            key_values = [record[col] for col in key_values]
+            key_values = [record[col] for col in key_columns]
             
             # Check if record exists
             check_query = f"""
@@ -462,14 +819,13 @@ class DatabaseOperations:
             self.conn.rollback()
             raise
 
+    @handle_database_error
     def read_records(self, table_name: str, 
                     filters: Optional[Dict[str, Any]] = None,
                     sort_by: Optional[List[str]] = None,
                     sort_desc: bool = False,
                     limit: Optional[int] = None,
-                    offset: Optional[int] = None,
-                    date_range: Optional[Dict[str, Any]] = None,
-                    custom_filters: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+                    offset: Optional[int] = None) -> List[Dict[str, Any]]:
         """
         Read records from a table with filtering, sorting, and pagination.
         
@@ -480,8 +836,6 @@ class DatabaseOperations:
             sort_desc: Whether to sort in descending order
             limit: Maximum number of records to return
             offset: Number of records to skip
-            date_range: Dictionary with 'column', 'start_date', and 'end_date' for date range filtering
-            custom_filters: List of custom SQL filter expressions
             
         Returns:
             List of dictionaries containing the records
@@ -489,61 +843,41 @@ class DatabaseOperations:
         if not self.cursor:
             self.connect()
             
-        # Build the base query
+        # Start building the query
         query = f"SELECT * FROM [{table_name}]"
+        params = []
         
         # Add WHERE clause if filters are provided
-        params = []
-        conditions = []
-        
-        # Add standard filters
         if filters:
+            conditions = []
             for column, value in filters.items():
-                if isinstance(value, (list, tuple)):
-                    # Handle IN clause
-                    placeholders = ", ".join(["?" for _ in value])
-                    conditions.append(f"[{column}] IN ({placeholders})")
-                    params.extend(value)
-                else:
-                    conditions.append(f"[{column}] = ?")
-                    params.append(value)
-        
-        # Add date range filter
-        if date_range:
-            column = date_range.get('column')
-            start_date = date_range.get('start_date')
-            end_date = date_range.get('end_date')
-            
-            if column and (start_date or end_date):
-                if start_date:
-                    conditions.append(f"[{column}] >= ?")
-                    params.append(start_date)
-                if end_date:
-                    conditions.append(f"[{column}] <= ?")
-                    params.append(end_date)
-        
-        # Add custom filters
-        if custom_filters:
-            conditions.extend(custom_filters)
-        
-        # Combine all conditions
-        if conditions:
+                conditions.append(f"[{column}] = ?")
+                params.append(value)
             query += " WHERE " + " AND ".join(conditions)
             
-        # Add ORDER BY clause if sort_by is provided
+        # Add ORDER BY clause
         if sort_by:
             direction = "DESC" if sort_desc else "ASC"
             query += " ORDER BY " + ", ".join(f"[{col}] {direction}" for col in sort_by)
             
-        # Add LIMIT and OFFSET if provided
+        # Handle pagination using Access-compatible syntax
         if limit is not None:
-            query += f" LIMIT {limit}"
-            if offset is not None:
-                query += f" OFFSET {offset}"
-                
-        # Execute the query
-        return self.execute_query(query, tuple(params) if params else None)
+            if offset is not None and offset > 0:
+                # For offset in Access, we need nested queries
+                query = f"""
+                    SELECT TOP {limit} *
+                    FROM (
+                        SELECT TOP {limit + offset} *
+                        FROM ({query}) AS inner_query
+                        {" ORDER BY " + ", ".join(f"[{col}] {'DESC' if sort_desc else 'ASC'}" for col in sort_by) if sort_by else ""}
+                    ) AS offset_query
+                    {" ORDER BY " + ", ".join(f"[{col}] {'ASC' if sort_desc else 'DESC'}" for col in sort_by) if sort_by else ""}
+                """
+            else:
+                query = f"SELECT TOP {limit} * FROM ({query}) AS limit_query"
         
+        return self.execute_query(query, tuple(params) if params else None)
+
     def build_query(self, table_name: str,
                    columns: Optional[List[str]] = None,
                    joins: Optional[List[Dict[str, str]]] = None,
@@ -707,413 +1041,6 @@ class DatabaseOperations:
         return self.execute_query(query, tuple(params) if params else None)
 
     @handle_database_error
-    def update_record(self, table_name: str, record: Dict[str, Any], 
-                     key_columns: List[str]) -> int:
-        """
-        Update a single record in a table.
-        
-        Args:
-            table_name: Name of the table to update
-            record: Dictionary containing column names and values
-            key_columns: List of column names that form the unique key
-            
-        Returns:
-            Number of records updated (1 if successful)
-            
-        Raises:
-            DatabaseError: If the record doesn't exist
-        """
-        # Build conditions from key columns
-        conditions = {col: record[col] for col in key_columns}
-        
-        # Verify record exists
-        self.verify_record_exists(table_name, conditions)
-        
-        # Build WHERE clause for key columns
-        where_clause = ' AND '.join([f'[{col}] = ?' for col in key_columns])
-        key_values = [record[col] for col in key_columns]
-        
-        # Build SET clause for non-key columns
-        update_cols = [col for col in record.keys() if col not in key_columns]
-        set_clause = ', '.join([f'[{col}] = ?' for col in update_cols])
-        update_values = [record[col] for col in update_cols]
-        
-        # Combine all values (update values first, then key values)
-        all_values = update_values + key_values
-        
-        # Begin transaction
-        self.begin_transaction()
-        try:
-            # Build and execute the query
-            query = f"""
-                UPDATE [{table_name}]
-                SET {set_clause}
-                WHERE {where_clause}
-            """
-            
-            self.execute_query(query, tuple(all_values))
-            affected_rows = self.cursor.rowcount
-            
-            if affected_rows != 1:
-                raise DatabaseError(
-                    f"Update affected {affected_rows} rows, expected 1",
-                    details={
-                        'table': table_name,
-                        'conditions': conditions,
-                        'affected_rows': affected_rows
-                    }
-                )
-            
-            self.commit_transaction()
-            return affected_rows
-            
-        except Exception as e:
-            self.rollback_transaction()
-            raise DatabaseError(
-                f"Failed to update record: {str(e)}",
-                details={
-                    'table': table_name,
-                    'record': record,
-                    'key_columns': key_columns
-                }
-            )
-
-    def batch_update(self, table_name: str, records: List[Dict[str, Any]], 
-                    key_columns: List[str], batch_size: int = 1000) -> int:
-        """
-        Update multiple records in a table in batches.
-        
-        Args:
-            table_name: Name of the table to update
-            records: List of dictionaries containing column names and values
-            key_columns: List of column names that form the unique key
-            batch_size: Number of records to update in each batch
-            
-        Returns:
-            Total number of records updated
-        """
-        if not records:
-            return 0
-            
-        if not self.cursor:
-            self.connect()
-            
-        total_updated = 0
-        temp_table = None
-        
-        try:
-            # Create a temporary table for batch processing
-            temp_table = f"temp_batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            columns = list(records[0].keys())
-            
-            # Create temporary table with same structure
-            create_temp_query = f"""
-                SELECT TOP 0 *
-                INTO [{temp_table}]
-                FROM [{table_name}]
-            """
-            self.execute_query(create_temp_query)
-            
-            # Process records in batches
-            for i in range(0, len(records), batch_size):
-                batch = records[i:i + batch_size]
-                if not batch:
-                    continue
-                    
-                # Prepare batch update query
-                update_cols = [col for col in columns if col not in key_columns]
-                set_clause = ', '.join([f't.[{col}] = s.[{col}]' for col in update_cols])
-                where_clause = ' AND '.join([f't.[{col}] = s.[{col}]' for col in key_columns])
-                
-                query = f"""
-                    UPDATE t
-                    SET {set_clause}
-                    FROM [{table_name}] t
-                    INNER JOIN [{temp_table}] s
-                    ON {where_clause}
-                """
-                
-                # Insert batch into temporary table
-                self.batch_insert(temp_table, batch, batch_size)
-                
-                # Execute the update
-                self.execute_query(query)
-                total_updated += len(batch)
-                
-                self.logger.info(f"Updated batch of {len(batch)} records")
-            
-            self.conn.commit()
-            self.logger.info(f"Successfully updated {total_updated} records in {table_name}")
-            return total_updated
-            
-        except pyodbc.Error as e:
-            self.logger.error(f"Error during batch update in {table_name}: {e}")
-            self.conn.rollback()
-            raise
-            
-        finally:
-            # Clean up temporary table
-            if temp_table:
-                try:
-                    self.execute_query(f"DROP TABLE [{temp_table}]")
-                except Exception as e:
-                    self.logger.warning(f"Failed to clean up temporary table: {e}")
-
-    def update_with_conditions(self, table_name: str, 
-                             updates: Dict[str, Any],
-                             conditions: Dict[str, Any]) -> int:
-        """
-        Update records in a table based on conditions.
-        
-        Args:
-            table_name: Name of the table to update
-            updates: Dictionary of column names and new values
-            conditions: Dictionary of column names and values to filter by
-            
-        Returns:
-            Number of records updated
-        """
-        if not self.cursor:
-            self.connect()
-            
-        try:
-            # Build SET clause
-            set_clause = ', '.join([f'[{col}] = ?' for col in updates.keys()])
-            update_values = list(updates.values())
-            
-            # Build WHERE clause
-            where_clause = ' AND '.join([f'[{col}] = ?' for col in conditions.keys()])
-            condition_values = list(conditions.values())
-            
-            # Combine all values
-            all_values = update_values + condition_values
-            
-            # Build and execute the query
-            query = f"""
-                UPDATE [{table_name}]
-                SET {set_clause}
-                WHERE {where_clause}
-            """
-            
-            self.execute_query(query, tuple(all_values))
-            self.conn.commit()
-            
-            affected_rows = self.cursor.rowcount
-            self.logger.info(f"Updated {affected_rows} records in {table_name}")
-            return affected_rows
-            
-        except pyodbc.Error as e:
-            self.logger.error(f"Error updating records in {table_name}: {e}")
-            self.conn.rollback()
-            raise 
-
-    def delete_records(self, table_name: str, conditions: Dict[str, Any] = None) -> int:
-        """
-        Delete records from a table based on conditions.
-        
-        Args:
-            table_name (str): Name of the table to delete from
-            conditions (Dict[str, Any], optional): Conditions for deletion
-            
-        Returns:
-            int: Number of records deleted
-            
-        Example:
-            >>> db.delete_records("products", {"category": "discontinued"})
-            5  # 5 records deleted
-        """
-        try:
-            if not self.conn:
-                self.connect()
-            
-            # Build the DELETE query
-            query = f"DELETE FROM [{table_name}]"
-            params = []
-            
-            if conditions:
-                where_clause = " AND ".join([f"[{k}] = ?" for k in conditions.keys()])
-                query += f" WHERE {where_clause}"
-                params.extend(conditions.values())
-            
-            # Execute the query
-            self.cursor.execute(query, params)
-            self.conn.commit()
-            
-            return self.cursor.rowcount
-            
-        except Exception as e:
-            if self.conn:
-                self.conn.rollback()
-            raise DatabaseError(f"Error deleting records: {str(e)}")
-    
-    def soft_delete(self, table_name: str, record_id: Any, id_column: str = "id") -> bool:
-        """
-        Perform a soft delete by setting a deleted flag instead of removing the record.
-        
-        Args:
-            table_name (str): Name of the table
-            record_id (Any): ID of the record to soft delete
-            id_column (str, optional): Name of the ID column. Defaults to "id".
-            
-        Returns:
-            bool: True if the record was soft deleted, False otherwise
-            
-        Example:
-            >>> db.soft_delete("products", 123)
-            True
-        """
-        try:
-            if not self.conn:
-                self.connect()
-            
-            # Check if the table has a deleted_at column
-            columns = self.get_table_columns(table_name)
-            if "deleted_at" not in columns:
-                raise DatabaseError(f"Table {table_name} does not support soft delete")
-            
-            # Update the deleted_at timestamp
-            query = f"""
-                UPDATE [{table_name}]
-                SET deleted_at = ?
-                WHERE [{id_column}] = ? AND deleted_at IS NULL
-            """
-            self.cursor.execute(query, (datetime.now(), record_id))
-            self.conn.commit()
-            
-            return self.cursor.rowcount > 0
-            
-        except Exception as e:
-            if self.conn:
-                self.conn.rollback()
-            raise DatabaseError(f"Error performing soft delete: {str(e)}")
-    
-    def cascade_delete(self, table_name: str, record_id: Any, 
-                      cascade_tables: List[Dict[str, Any]], 
-                      id_column: str = "id") -> Dict[str, int]:
-        """
-        Delete a record and all related records in cascade tables.
-        
-        Args:
-            table_name (str): Name of the main table
-            record_id (Any): ID of the record to delete
-            cascade_tables (List[Dict[str, Any]]): List of cascade table configurations
-                Each dict should contain:
-                - table: Name of the cascade table
-                - foreign_key: Name of the foreign key column
-                - cascade_type: "delete" or "nullify"
-            id_column (str, optional): Name of the ID column. Defaults to "id".
-            
-        Returns:
-            Dict[str, int]: Number of records deleted in each table
-            
-        Example:
-            >>> cascade_config = [
-            ...     {"table": "order_items", "foreign_key": "product_id", "cascade_type": "delete"},
-            ...     {"table": "product_reviews", "foreign_key": "product_id", "cascade_type": "nullify"}
-            ... ]
-            >>> db.cascade_delete("products", 123, cascade_config)
-            {"products": 1, "order_items": 5, "product_reviews": 3}
-        """
-        try:
-            if not self.conn:
-                self.connect()
-            
-            self.begin_transaction()
-            results = {}
-            
-            try:
-                # Process each cascade table
-                for cascade in cascade_tables:
-                    cascade_table = cascade["table"]
-                    foreign_key = cascade["foreign_key"]
-                    cascade_type = cascade["cascade_type"]
-                    
-                    if cascade_type == "delete":
-                        # Delete related records
-                        query = f"""
-                            DELETE FROM [{cascade_table}]
-                            WHERE [{foreign_key}] = ?
-                        """
-                        self.cursor.execute(query, (record_id,))
-                        results[cascade_table] = self.cursor.rowcount
-                    elif cascade_type == "nullify":
-                        # Set foreign key to NULL
-                        query = f"""
-                            UPDATE [{cascade_table}]
-                            SET [{foreign_key}] = NULL
-                            WHERE [{foreign_key}] = ?
-                        """
-                        self.cursor.execute(query, (record_id,))
-                        results[cascade_table] = self.cursor.rowcount
-                
-                # Delete the main record
-                query = f"""
-                    DELETE FROM [{table_name}]
-                    WHERE [{id_column}] = ?
-                """
-                self.cursor.execute(query, (record_id,))
-                results[table_name] = self.cursor.rowcount
-                
-                self.commit_transaction()
-                return results
-                
-            except Exception as e:
-                self.rollback_transaction()
-                raise DatabaseError(f"Error during cascade delete: {str(e)}")
-            
-        except Exception as e:
-            if self.conn:
-                self.conn.rollback()
-            raise DatabaseError(f"Error performing cascade delete: {str(e)}")
-    
-    def delete_with_transaction(self, table_name: str, conditions: Dict[str, Any] = None) -> int:
-        """
-        Delete records within a transaction, with rollback on error.
-        
-        Args:
-            table_name (str): Name of the table to delete from
-            conditions (Dict[str, Any], optional): Conditions for deletion
-            
-        Returns:
-            int: Number of records deleted
-            
-        Example:
-            >>> db.delete_with_transaction("orders", {"status": "cancelled"})
-            3  # 3 records deleted
-        """
-        try:
-            if not self.conn:
-                self.connect()
-            
-            self.begin_transaction()
-            
-            try:
-                # Build the DELETE query
-                query = f"DELETE FROM [{table_name}]"
-                params = []
-                
-                if conditions:
-                    where_clause = " AND ".join([f"[{k}] = ?" for k in conditions.keys()])
-                    query += f" WHERE {where_clause}"
-                    params.extend(conditions.values())
-                
-                # Execute the query
-                self.cursor.execute(query, params)
-                affected_rows = self.cursor.rowcount
-                
-                self.commit_transaction()
-                return affected_rows
-                
-            except Exception as e:
-                self.rollback_transaction()
-                raise DatabaseError(f"Error during delete transaction: {str(e)}")
-            
-        except Exception as e:
-            if self.conn:
-                self.conn.rollback()
-            raise DatabaseError(f"Error performing delete with transaction: {str(e)}")
-
-    @handle_database_error
     def create_table(self, table_name: str, columns: Dict[str, str], 
                     primary_key: Optional[List[str]] = None) -> None:
         """
@@ -1124,9 +1051,42 @@ class DatabaseOperations:
             columns: Dictionary of column names and their types
             primary_key: Optional list of primary key columns
         """
-        query = self.sql_syntax.convert_create_table(table_name, columns, primary_key)
-        self.execute_query(query)
+        if not self.cursor:
+            self.connect()
+            
+        # Build column definitions
+        column_defs = []
+        for col_name, col_type in columns.items():
+            # Convert common SQL types to Access types
+            if col_type.upper() == 'TEXT':
+                col_type = 'VARCHAR(255)'
+            elif col_type.upper() == 'INTEGER':
+                col_type = 'LONG'
+            elif col_type.upper() == 'FLOAT':
+                col_type = 'DOUBLE'
+            elif col_type.upper() == 'DATETIME':
+                col_type = 'DATE'
+            elif col_type.upper() == 'BOOLEAN':
+                col_type = 'BIT'
+                
+            column_defs.append(f"[{col_name}] {col_type}")
+            
+        # Add primary key constraint if specified
+        if primary_key:
+            pk_cols = ', '.join(f"[{col}]" for col in primary_key)
+            column_defs.append(f"CONSTRAINT pk_{table_name} PRIMARY KEY ({pk_cols})")
+            
+        # Create table query
+        query = f"""
+            CREATE TABLE [{table_name}] (
+                {', '.join(column_defs)}
+            )
+        """
         
+        self.execute_query(query)
+        if not self.in_transaction:
+            self.conn.commit()
+
     @handle_database_error
     def alter_table(self, table_name: str, 
                    add_columns: Optional[Dict[str, str]] = None,
@@ -1139,9 +1099,36 @@ class DatabaseOperations:
             add_columns: Dictionary of columns to add and their types
             drop_columns: List of columns to drop
         """
-        query = self.sql_syntax.convert_alter_table(table_name, add_columns, drop_columns)
-        self.execute_query(query)
-        
+        if not self.cursor:
+            self.connect()
+            
+        # Add columns
+        if add_columns:
+            for col_name, col_type in add_columns.items():
+                # Convert common SQL types to Access types
+                if col_type.upper() == 'TEXT':
+                    col_type = 'VARCHAR(255)'
+                elif col_type.upper() == 'INTEGER':
+                    col_type = 'LONG'
+                elif col_type.upper() == 'FLOAT':
+                    col_type = 'DOUBLE'
+                elif col_type.upper() == 'DATETIME':
+                    col_type = 'DATE'
+                elif col_type.upper() == 'BOOLEAN':
+                    col_type = 'BIT'
+                    
+                query = f"ALTER TABLE [{table_name}] ADD COLUMN [{col_name}] {col_type}"
+                self.execute_query(query)
+                
+        # Drop columns
+        if drop_columns:
+            for col_name in drop_columns:
+                query = f"ALTER TABLE [{table_name}] DROP COLUMN [{col_name}]"
+                self.execute_query(query)
+                
+        if not self.in_transaction:
+            self.conn.commit()
+            
     @handle_database_error
     def add_foreign_key(self, table_name: str, column: str, 
                        ref_table: str, ref_column: str) -> None:
@@ -1154,8 +1141,20 @@ class DatabaseOperations:
             ref_table: Name of the referenced table
             ref_column: Name of the referenced column
         """
-        query = self.sql_syntax.convert_foreign_key(table_name, column, ref_table, ref_column)
+        if not self.cursor:
+            self.connect()
+            
+        constraint_name = f"fk_{table_name}_{column}"
+        query = f"""
+            ALTER TABLE [{table_name}]
+            ADD CONSTRAINT [{constraint_name}]
+            FOREIGN KEY ([{column}])
+            REFERENCES [{ref_table}] ([{ref_column}])
+        """
+        
         self.execute_query(query)
+        if not self.in_transaction:
+            self.conn.commit()
 
     @handle_database_error
     def update_data(self, table: str, data: Dict[str, Any], 
@@ -1203,4 +1202,25 @@ class DatabaseOperations:
             cursor.execute(query, where_params)
             return cursor.rowcount
         finally:
-            cursor.close() 
+            cursor.close()
+
+    @handle_database_error
+    def execute_many(self, query: str, values: List[List[Any]]) -> int:
+        """
+        Execute a query with multiple sets of parameters.
+
+        Args:
+            query: SQL query to execute
+            values: List of parameter lists
+
+        Returns:
+            Total number of rows affected
+        """
+        if not self.cursor:
+            self.connect()
+
+        total_affected = 0
+        for value_set in values:
+            self.cursor.execute(query, value_set)
+            total_affected += self.cursor.rowcount
+        return total_affected 

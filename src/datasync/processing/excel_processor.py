@@ -6,6 +6,7 @@ import pandas as pd
 from typing import Dict, List, Optional, Union
 from pathlib import Path
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,11 @@ class ExcelProcessor:
         """
         try:
             logger.info(f"Reading sheet '{sheet_name}' from {self.file_path}")
+            if sheet_name is None:
+                # When sheet_name is None, read the first sheet
+                sheets = pd.read_excel(self.file_path, sheet_name=None)
+                first_sheet_name = list(sheets.keys())[0]
+                return sheets[first_sheet_name]
             return pd.read_excel(self.file_path, sheet_name=sheet_name)
         except Exception as e:
             logger.error(f"Error reading Excel sheet: {str(e)}")
@@ -74,8 +80,23 @@ class ExcelProcessor:
         """
         try:
             logger.info(f"Writing to sheet '{sheet_name}' in {self.file_path}")
-            with pd.ExcelWriter(self.file_path, mode='a', if_sheet_exists='replace') as writer:
-                data.to_excel(writer, sheet_name=sheet_name, index=index)
+            
+            # Read existing sheets if file exists
+            existing_sheets = {}
+            if os.path.exists(self.file_path):
+                try:
+                    existing_sheets = pd.read_excel(self.file_path, sheet_name=None)
+                except Exception:
+                    pass
+            
+            # Update the sheet data
+            existing_sheets[sheet_name] = data
+            
+            # Write all sheets back to the file
+            with pd.ExcelWriter(self.file_path, engine='openpyxl') as writer:
+                for name, df in existing_sheets.items():
+                    df.to_excel(writer, sheet_name=name, index=index)
+                    
         except Exception as e:
             logger.error(f"Error writing to Excel sheet: {str(e)}")
             raise
@@ -116,4 +137,43 @@ class ExcelProcessor:
             return True
         except Exception as e:
             logger.error(f"Error validating sheet structure: {str(e)}")
-            return False 
+            return False
+    
+    def get_sheet_columns(self, sheet_name: str) -> List[str]:
+        """
+        Get column names from a specific sheet.
+        
+        Args:
+            sheet_name: Name of the sheet
+            
+        Returns:
+            List of column names
+        """
+        try:
+            logger.info(f"Getting column names from sheet '{sheet_name}' in {self.file_path}")
+            df = self.read_sheet(sheet_name)
+            return list(df.columns)
+        except Exception as e:
+            logger.error(f"Error getting column names: {str(e)}")
+            raise
+    
+    def is_column_empty(self, sheet_name: str, column_name: str) -> bool:
+        """
+        Check if a column in a sheet is empty (all values are NA).
+        
+        Args:
+            sheet_name: Name of the sheet
+            column_name: Name of the column to check
+            
+        Returns:
+            True if the column is empty, False otherwise
+        """
+        try:
+            logger.info(f"Checking if column '{column_name}' in sheet '{sheet_name}' is empty")
+            df = self.read_sheet(sheet_name)
+            if column_name not in df.columns:
+                raise ValueError(f"Column '{column_name}' not found in sheet '{sheet_name}'")
+            return df[column_name].isna().all()
+        except Exception as e:
+            logger.error(f"Error checking column emptiness: {str(e)}")
+            raise 
