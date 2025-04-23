@@ -9,13 +9,21 @@ import pyodbc
 import pandas as pd
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Any, Optional, Union
+from typing import List, Dict, Any, Optional, Union, Tuple
 import logging
 from datasync.database.exceptions import DatabaseError
 from datasync.database.transaction import TransactionManager
 from datasync.utils.logger import setup_logger
 from datasync.utils.mock_database import create_mock_database
-from ..utils.error_handling import handle_database_error
+from ..utils.error_handling import (
+    ErrorContext,
+    ErrorHandler,
+    RetryConfig,
+    retry_on_error,
+    handle_error,
+    log_error,
+    format_error_message
+)
 from ..utils.path_utils import normalize_path
 
 class DatabaseOperations:
@@ -334,7 +342,7 @@ class DatabaseOperations:
             self.logger.error(f"Error reading table {table_name}: {e}")
             raise
     
-    @handle_database_error
+    @handle_error
     def record_exists(self, table_name: str, conditions: Dict[str, Any]) -> bool:
         """
         Check if a record exists in the table.
@@ -352,7 +360,7 @@ class DatabaseOperations:
         result = self.execute_query(query, list(conditions.values()))
         return result[0]['count'] > 0
 
-    @handle_database_error
+    @handle_error
     def verify_record_exists(self, table_name: str, conditions: Dict[str, Any]) -> None:
         """
         Verify that a record exists, raising an error if it doesn't.
@@ -374,7 +382,7 @@ class DatabaseOperations:
                 }
             )
 
-    @handle_database_error
+    @handle_error
     def count_records(self, table_name: str, year: int, date_column: str = 'date_field') -> int:
         """
         Count records for a specific year in a table.
@@ -408,7 +416,7 @@ class DatabaseOperations:
         result = self.execute_query(query, (year,))
         return result[0]['record_count']
 
-    @handle_database_error
+    @handle_error
     def delete_year_data(self, table_name: str, year: int, 
                         date_column: str = 'date_field',
                         batch_size: int = 1000) -> int:
@@ -486,7 +494,7 @@ class DatabaseOperations:
             self.logger.error(f"Error during cleanup: {e}")
             raise
 
-    @handle_database_error
+    @handle_error
     def insert_data(self, table: str, data: Dict[str, Any]) -> int:
         """
         Insert data into a table.
@@ -509,7 +517,7 @@ class DatabaseOperations:
         finally:
             cursor.close()
 
-    @handle_database_error
+    @handle_error
     def insert_record(self, table_name: str, record: Dict[str, Any]) -> int:
         """
         Insert a single record into the specified table.
@@ -534,9 +542,9 @@ class DatabaseOperations:
                 elif value is None:
                     record[key] = None
                     
-            columns = ', '.join(record.keys())
+            columns = ', '.join(f"[{k}]" for k in record.keys())
             placeholders = ', '.join(['?' for _ in record])
-            query = f"INSERT INTO {table_name} ({columns}) VALUES ({placeholders})"
+            query = f"INSERT INTO [{table_name}] ({columns}) VALUES ({placeholders})"
             
             self.cursor.execute(query, list(record.values()))
             self.cursor.execute("SELECT @@IDENTITY")
@@ -551,16 +559,38 @@ class DatabaseOperations:
                 self.rollback_transaction()
             raise DatabaseError(f"Failed to insert record: {str(e)}")
     
-    @handle_database_error
+    def _build_where_clause(self, conditions: Dict[str, Any]) -> Tuple[str, List[Any]]:
+        """
+        Build a WHERE clause from a dictionary of conditions.
+        
+        Args:
+            conditions: Dictionary of column names and values
+            
+        Returns:
+            Tuple of (where_clause, parameters)
+        """
+        if not conditions:
+            return "", []
+            
+        where_parts = []
+        params = []
+        
+        for key, value in conditions.items():
+            where_parts.append(f"[{key}] = ?")
+            params.append(value)
+            
+        return " AND ".join(where_parts), params
+
+    @handle_error
     def update_record(self, table_name: str, record: Dict[str, Any], 
-                     condition: Optional[str] = None) -> int:
+                     conditions: Union[List[str], Dict[str, Any]]) -> int:
         """
         Update records in the specified table.
         
         Args:
             table_name: Name of the table to update
             record: Dictionary of column names and new values
-            condition: Optional WHERE clause condition
+            conditions: List of column names to use as conditions, or dictionary of conditions
             
         Returns:
             int: Number of records updated
@@ -578,13 +608,27 @@ class DatabaseOperations:
                 elif value is None:
                     record[key] = None
                     
-            set_clause = ', '.join([f"{k} = ?" for k in record.keys()])
-            query = f"UPDATE {table_name} SET {set_clause}"
+            set_clause = ', '.join([f"[{k}] = ?" for k in record.keys()])
+            params = list(record.values())
             
-            if condition:
-                query += f" WHERE {condition}"
+            if isinstance(conditions, list):
+                # Use specified columns as conditions
+                where_parts = []
+                for col in conditions:
+                    if col in record:
+                        where_parts.append(f"[{col}] = ?")
+                        params.append(record[col])
+                where_clause = " AND ".join(where_parts)
+            else:
+                # Use dictionary conditions
+                where_clause, where_params = self._build_where_clause(conditions)
+                params.extend(where_params)
                 
-            self.cursor.execute(query, list(record.values()))
+            query = f"UPDATE [{table_name}] SET {set_clause}"
+            if where_clause:
+                query += f" WHERE {where_clause}"
+                
+            self.cursor.execute(query, params)
             affected_rows = self.cursor.rowcount
             
             if not self.in_transaction:
@@ -596,15 +640,15 @@ class DatabaseOperations:
                 self.rollback_transaction()
             raise DatabaseError(f"Failed to update record: {str(e)}")
     
-    @handle_database_error
-    def delete_records(self, table_name: str, condition: Optional[str] = None,
+    @handle_error
+    def delete_records(self, table_name: str, conditions: Dict[str, Any],
                       soft_delete: bool = False, cascade: bool = False) -> int:
         """
         Delete records from the specified table.
         
         Args:
             table_name: Name of the table to delete from
-            condition: Optional WHERE clause condition
+            conditions: Dictionary of column names and values for WHERE clause
             soft_delete: If True, mark records as deleted instead of removing them
             cascade: If True, delete related records in other tables
             
@@ -615,25 +659,32 @@ class DatabaseOperations:
             self.connect()
             
         try:
+            where_clause, params = self._build_where_clause(conditions)
+            
             if soft_delete:
                 # Update the is_deleted flag instead of deleting
-                query = f"UPDATE {table_name} SET is_deleted = -1"
-                if condition:
-                    query += f" WHERE {condition}"
+                query = f"UPDATE [{table_name}] SET [is_deleted] = -1"
+                if where_clause:
+                    query += f" WHERE {where_clause}"
             else:
                 if cascade:
                     # Get foreign key relationships
                     fk_info = self.get_foreign_keys(table_name)
                     for fk in fk_info:
                         # Delete related records first
-                        self.delete_records(fk['referenced_table'], 
-                                          f"{fk['referenced_column']} IN (SELECT {fk['column']} FROM {table_name} WHERE {condition})")
+                        subquery = f"SELECT [{fk['column']}] FROM [{table_name}]"
+                        if where_clause:
+                            subquery += f" WHERE {where_clause}"
+                        self.delete_records(
+                            fk['referenced_table'],
+                            {fk['referenced_column']: ('IN', subquery, params)}
+                        )
                 
-                query = f"DELETE FROM {table_name}"
-                if condition:
-                    query += f" WHERE {condition}"
+                query = f"DELETE FROM [{table_name}]"
+                if where_clause:
+                    query += f" WHERE {where_clause}"
                     
-            self.cursor.execute(query)
+            self.cursor.execute(query, params)
             affected_rows = self.cursor.rowcount
             
             if not self.in_transaction:
@@ -645,7 +696,7 @@ class DatabaseOperations:
                 self.rollback_transaction()
             raise DatabaseError(f"Failed to delete records: {str(e)}")
     
-    @handle_database_error
+    @handle_error
     def get_foreign_keys(self, table_name: str) -> List[Dict[str, str]]:
         """
         Get foreign key relationships for a table.
@@ -681,7 +732,7 @@ class DatabaseOperations:
         except Exception as e:
             raise DatabaseError(f"Failed to get foreign keys: {str(e)}")
 
-    @handle_database_error
+    @handle_error
     def batch_insert(self, table_name: str, records: List[Dict[str, Any]], 
                     batch_size: int = 1000) -> int:
         """
@@ -819,7 +870,7 @@ class DatabaseOperations:
             self.conn.rollback()
             raise
 
-    @handle_database_error
+    @handle_error
     def read_records(self, table_name: str, 
                     filters: Optional[Dict[str, Any]] = None,
                     sort_by: Optional[List[str]] = None,
@@ -1040,7 +1091,7 @@ class DatabaseOperations:
         # Execute the query
         return self.execute_query(query, tuple(params) if params else None)
 
-    @handle_database_error
+    @handle_error
     def create_table(self, table_name: str, columns: Dict[str, str], 
                     primary_key: Optional[List[str]] = None) -> None:
         """
@@ -1087,7 +1138,7 @@ class DatabaseOperations:
         if not self.in_transaction:
             self.conn.commit()
 
-    @handle_database_error
+    @handle_error
     def alter_table(self, table_name: str, 
                    add_columns: Optional[Dict[str, str]] = None,
                    drop_columns: Optional[List[str]] = None) -> None:
@@ -1129,7 +1180,7 @@ class DatabaseOperations:
         if not self.in_transaction:
             self.conn.commit()
             
-    @handle_database_error
+    @handle_error
     def add_foreign_key(self, table_name: str, column: str, 
                        ref_table: str, ref_column: str) -> None:
         """
@@ -1156,7 +1207,7 @@ class DatabaseOperations:
         if not self.in_transaction:
             self.conn.commit()
 
-    @handle_database_error
+    @handle_error
     def update_data(self, table: str, data: Dict[str, Any], 
                    where: str, where_params: Dict[str, Any]) -> int:
         """
@@ -1181,7 +1232,7 @@ class DatabaseOperations:
         finally:
             cursor.close()
 
-    @handle_database_error
+    @handle_error
     def delete_data(self, table: str, where: str, 
                    where_params: Dict[str, Any]) -> int:
         """
@@ -1204,7 +1255,7 @@ class DatabaseOperations:
         finally:
             cursor.close()
 
-    @handle_database_error
+    @handle_error
     def execute_many(self, query: str, values: List[List[Any]]) -> int:
         """
         Execute a query with multiple sets of parameters.

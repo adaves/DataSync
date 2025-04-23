@@ -109,36 +109,70 @@ def test_sheet_structure_validation(validator):
 def test_data_type_validation(validator, sample_df):
     """Test data type validation."""
     # Test integer validation
-    result = validator.validate_data_types(sample_df, {'int_col': 'int'})
+    result = validator.validate_data_types(
+        sample_df,
+        {'int_col': 'int'},
+        nullable_columns=['int_col'],
+        custom_messages={'int_col': 'Please enter a valid integer'}
+    )
     assert not result.is_valid
     assert len([e for e in result.errors if e.row_index == 4]) == 1  # '4x' is invalid
+    assert any('Please enter a valid integer' in str(error) for error in result.errors)
     
-    # Test float validation
-    result = validator.validate_data_types(sample_df, {'float_col': 'float'})
+    # Test float validation with non-nullable column
+    result = validator.validate_data_types(
+        sample_df,
+        {'float_col': 'float'},
+        nullable_columns=[]
+    )
     assert not result.is_valid
     assert len([e for e in result.errors if e.row_index == 3]) == 1  # 'invalid' is invalid
+    assert any('Null value not allowed' in str(error) for error in result.errors)
     
-    # Test string validation
-    result = validator.validate_data_types(sample_df, {'str_col': 'str'})
-    assert not result.is_valid  # Integer 1 is not a string
+    # Test string validation with custom message
+    result = validator.validate_data_types(
+        sample_df,
+        {'str_col': 'str'},
+        nullable_columns=['str_col'],
+        custom_messages={'str_col': 'Text value required'}
+    )
+    assert result.is_valid  # All values can be converted to strings
     
-    # Test date validation
-    result = validator.validate_data_types(sample_df, {'date_col': 'date'})
+    # Test date validation with nullable column
+    result = validator.validate_data_types(
+        sample_df,
+        {'date_col': 'date'},
+        nullable_columns=['date_col']
+    )
     assert not result.is_valid
     assert len([e for e in result.errors if 'invalid' in str(e.value)]) == 1
     
-    # Test boolean validation
-    result = validator.validate_data_types(sample_df, {'bool_col': 'bool'})
+    # Test boolean validation with custom message
+    result = validator.validate_data_types(
+        sample_df,
+        {'bool_col': 'bool'},
+        nullable_columns=['bool_col'],
+        custom_messages={'bool_col': 'Please enter Yes/No or True/False'}
+    )
     assert not result.is_valid
     assert len([e for e in result.errors if e.value == 'invalid']) == 1
+    assert any('Please enter Yes/No or True/False' in str(error) for error in result.errors)
     
     # Test missing column
-    result = validator.validate_data_types(sample_df, {'nonexistent': 'str'})
+    result = validator.validate_data_types(
+        sample_df,
+        {'nonexistent': 'str'},
+        nullable_columns=['nonexistent']
+    )
     assert not result.is_valid
     assert any('Column not found' in str(error) for error in result.errors)
     
     # Test unknown type
-    result = validator.validate_data_types(sample_df, {'str_col': 'unknown_type'})
+    result = validator.validate_data_types(
+        sample_df,
+        {'str_col': 'unknown_type'},
+        nullable_columns=['str_col']
+    )
     assert not result.is_valid
     assert any('Unknown type validator' in str(error) for error in result.errors)
 

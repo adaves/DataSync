@@ -12,6 +12,23 @@ from datasync.utils.error_handling import ConfigurationError
 
 logger = logging.getLogger(__name__)
 
+def load_config(config_path: Optional[str] = None, use_defaults: bool = True) -> Dict[str, Any]:
+    """
+    Load configuration from a YAML file.
+    
+    Args:
+        config_path: Path to the configuration file. If None, uses default path.
+        use_defaults: Whether to use default values if config file not found
+        
+    Returns:
+        Dictionary containing configuration settings
+        
+    Raises:
+        ConfigurationError: If there is an error loading the configuration
+    """
+    config_manager = ConfigManager(config_path, use_defaults)
+    return config_manager._config
+
 class ConfigManager:
     """Manages application configuration settings."""
     

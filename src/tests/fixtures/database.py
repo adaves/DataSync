@@ -73,14 +73,17 @@ def db_operations(mock_db_path):
             pass  # Ignore file deletion errors
 
 @pytest.fixture
-def db_validation():
+def db_validation(db_operations):
     """
     Create a DatabaseValidation instance.
+    
+    Args:
+        db_operations: DatabaseOperations instance for database access
     
     Returns:
         DatabaseValidation instance
     """
-    return DatabaseValidation()
+    return DatabaseValidation(db_operations)
 
 @pytest.fixture
 def db_monitor():
@@ -181,30 +184,40 @@ def setup_test_table(db_operations):
     """
     table_name = 'test_table'
     
-    # Create table
+    # Create table with Access-compatible data types
     db_operations.execute_query("""
-        CREATE TABLE test_table (
-            id INTEGER PRIMARY KEY,
-            name TEXT(50),
-            value DOUBLE,
-            created_at DATETIME
+        CREATE TABLE [test_table] (
+            [id] COUNTER PRIMARY KEY,
+            [name] TEXT(50),
+            [value] DOUBLE,
+            [category] TEXT(10),
+            [date_field] DATETIME
         )
     """)
     
     # Insert sample records
     records = [
-        {'id': 1, 'name': 'Test 1', 'value': 10.5, 'created_at': datetime.now()},
-        {'id': 2, 'name': 'Test 2', 'value': 20.5, 'created_at': datetime.now()},
-        {'id': 3, 'name': 'Test 3', 'value': 30.5, 'created_at': datetime.now()}
+        {'id': 1, 'name': 'Test 1', 'value': 10.5, 'category': 'A', 'date_field': datetime.now()},
+        {'id': 2, 'name': 'Test 2', 'value': 20.5, 'category': 'A', 'date_field': datetime.now()},
+        {'id': 3, 'name': 'Test 3', 'value': 30.0, 'category': 'B', 'date_field': datetime.now()}
     ]
     
     for record in records:
         db_operations.insert_record(table_name, record)
     
-    yield table_name, records
+    db_operations.commit_transaction()
+    
+    yield table_name
     
     # Cleanup
-    db_operations.execute_query(f"DROP TABLE {table_name}")
+    try:
+        db_operations.execute_query(f"DROP TABLE [{table_name}]")
+        db_operations.commit_transaction()
+    except Exception:
+        pass  # Ignore cleanup errors
+        
+    if db_operations.in_transaction:
+        db_operations.rollback_transaction()
 
 @pytest.fixture
 def setup_yearly_data(db_operations):

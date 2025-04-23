@@ -25,6 +25,9 @@ from datasync.database.sql_syntax import AccessSQLSyntax
 import os
 from unittest.mock import Mock, patch
 
+# Test database connection string
+TEST_DB_CONNECTION_STRING = "DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};DBQ=tests/fixtures/mock_database/test.accdb"
+
 @pytest.fixture
 def mock_db_path(tmp_path):
     """Create a temporary database file for testing."""
@@ -33,60 +36,62 @@ def mock_db_path(tmp_path):
     
     # Create the database file
     db_path = tmp_path / "test_database.accdb"
-    db_path.touch()  # Create an empty file
+    create_mock_database(str(db_path))
     
     return str(db_path)
 
 @pytest.fixture
-def db_operations(mock_db_path):
-    """Initialize database operations with mock database."""
-    # Create a new database file if it doesn't exist
-    if not os.path.exists(mock_db_path):
-        with open(mock_db_path, 'w') as f:
-            pass  # Create empty file
-            
-    db = DatabaseOperations(mock_db_path)
-    db.connect()
-    yield db
+def db_ops(tmp_path):
+    """Create a DatabaseOperations instance for testing."""
+    # Create a temporary database file path
+    db_path = tmp_path / "test.accdb"
+    
+    # Create the database operations instance
+    ops = DatabaseOperations(str(db_path))
+    ops.connect()  # This will create the database if it doesn't exist
+    
+    yield ops
+    
     try:
-        db.close()
+        ops.disconnect()
     except Exception:
-        pass
+        pass  # Ignore cleanup errors
 
 @pytest.fixture
-def setup_test_table(db_operations):
-    """Create a test table with sample data."""
+def setup_test_table(db_ops):
+    """Create and clean up test table."""
+    table_name = "test_table"
+    
+    # Clean up if table exists
     try:
-        # Create test table
-        db_operations.create_table(
-            "test_table",
-            {
-                "id": "LONG",
-                "name": "VARCHAR(255)",
-                "value": "DOUBLE",
-                "category": "VARCHAR(50)",
-                "date_field": "DATE"
-            },
-            primary_key=["id"]
-        )
+        db_ops.execute_query(f"DROP TABLE [{table_name}]")
+    except Exception:
+        pass  # Ignore if table doesn't exist
         
-        # Insert test data
-        test_data = [
-            {"id": 1, "name": "Test 1", "value": 10.5, "category": "A", "date_field": datetime(2023, 1, 1)},
-            {"id": 2, "name": "Test 2", "value": 20.0, "category": "A", "date_field": datetime(2023, 6, 1)},
-            {"id": 3, "name": "Test 3", "value": 30.0, "category": "B", "date_field": datetime(2024, 1, 1)}
-        ]
+    # Create test table
+    columns = {
+        "id": "INT IDENTITY(1,1)",
+        "name": "NVARCHAR(50)",
+        "value": "INT"
+    }
+    db_ops.create_table(table_name, columns, primary_key=["id"])
+    
+    # Insert some test data
+    test_data = [
+        {"name": "test1", "value": 1},
+        {"name": "test2", "value": 2},
+        {"name": "test3", "value": 3}
+    ]
+    for data in test_data:
+        db_ops.insert_record(table_name, data)
         
-        for record in test_data:
-            db_operations.insert_record("test_table", record)
-            
-        yield "test_table"
-        
-    finally:
-        try:
-            db_operations.execute_query("DROP TABLE [test_table]")
-        except Exception:
-            pass
+    yield table_name
+    
+    # Clean up
+    try:
+        db_ops.execute_query(f"DROP TABLE [{table_name}]")
+    except Exception:
+        pass  # Ignore cleanup errors
 
 @pytest.fixture
 def db_validation():
@@ -102,72 +107,72 @@ class TestDatabaseOperations:
     """Test suite for DatabaseOperations class."""
     
     @pytest.fixture(autouse=True)
-    def setup_method(self, db_operations):
+    def setup_method(self, db_ops):
         """Set up test environment before each test method."""
-        self.db = db_operations
+        self.db = db_ops
         self.test_table_name = "test_table"
         
         # Create test table using DatabaseOperations methods
         try:
-            self.db.create_table(
-                self.test_table_name,
-                {
-                    "id": "COUNTER",
-                    "date_field": "DATETIME",
-                    "value": "DOUBLE",
-                    "category": "TEXT(50)"
-                },
-                primary_key=["id"]
-            )
+            self.db.execute_query("""
+                CREATE TABLE [test_table] (
+                    [id] COUNTER PRIMARY KEY,
+                    [name] TEXT(50),
+                    [value] DOUBLE,
+                    [category] TEXT(10),
+                    [date_field] DATETIME
+                )
+            """)
             
             # Insert some test data
             test_data = [
-                {"date_field": datetime(2023, 1, 1), "value": 10.5, "category": "A"},
-                {"date_field": datetime(2023, 6, 1), "value": 20.0, "category": "A"},
-                {"date_field": datetime(2024, 1, 1), "value": 30.0, "category": "B"}
+                {"name": "Test 1", "value": 10.5, "category": "A", "date_field": datetime(2023, 1, 1)},
+                {"name": "Test 2", "value": 20.0, "category": "A", "date_field": datetime(2023, 6, 1)},
+                {"name": "Test 3", "value": 30.0, "category": "B", "date_field": datetime(2024, 1, 1)}
             ]
             
             for record in test_data:
                 self.db.insert_record(self.test_table_name, record)
                 
-            self.db.commit_transaction()
+            self.db.commit()
             
         except Exception as e:
             if "already exists" not in str(e):
-                if self.db.in_transaction:
-                    self.db.rollback_transaction()
+                if hasattr(self.db, 'in_transaction') and self.db.in_transaction:
+                    self.db.rollback()
                 raise
-            self.db.rollback_transaction()
+            self.db.rollback()
 
     def teardown_method(self):
         """Clean up after each test method."""
-        try:
-            # Drop test table if it exists
-            self.db.execute_query(f"DROP TABLE [{self.test_table_name}]")
-            self.db.commit_transaction()
-        except Exception:
-            pass  # Ignore cleanup errors
+        if hasattr(self, 'db') and self.db is not None:
+            try:
+                # Drop test table if it exists
+                self.db.execute_query(f"DROP TABLE [{self.test_table_name}]")
+                self.db.commit()
+            except Exception:
+                pass  # Ignore cleanup errors
             
-        if self.db.in_transaction:
-            self.db.rollback_transaction()
+            if hasattr(self.db, 'in_transaction') and self.db.in_transaction:
+                self.db.rollback()
 
-    def test_connection_management(self, db_operations):
+    def test_connection_management(self, db_ops):
         """Test database connection management."""
-        assert db_operations.conn is not None
-        assert db_operations.cursor is not None
+        assert db_ops.conn is not None
+        assert db_ops.cursor is not None
         
-        db_operations.close()
-        assert db_operations.conn is None
-        assert db_operations.cursor is None
+        db_ops.close()
+        assert db_ops.conn is None
+        assert db_ops.cursor is None
         
-        db_operations.connect()
-        assert db_operations.conn is not None
-        assert db_operations.cursor is not None
+        db_ops.connect()
+        assert db_ops.conn is not None
+        assert db_ops.cursor is not None
 
-    def test_table_operations(self, db_operations):
+    def test_table_operations(self, db_ops):
         """Test basic table operations."""
         # Create test table
-        db_operations.create_table(
+        db_ops.create_table(
             "test_table",
             {
                 "id": "LONG",
@@ -178,23 +183,23 @@ class TestDatabaseOperations:
         )
         
         # Verify table exists
-        tables = db_operations.get_tables()
+        tables = db_ops.get_tables()
         assert "test_table" in tables
         
         # Get columns
-        columns = db_operations.get_table_columns("test_table")
+        columns = db_ops.get_table_columns("test_table")
         assert "id" in columns
         assert "name" in columns
         assert "value" in columns
         
         # Clean up
-        db_operations.execute_query("DROP TABLE [test_table]")
+        db_ops.execute_query("DROP TABLE [test_table]")
 
-    def test_insert_operations(self, db_operations, setup_test_table):
-        """Test insert operations."""
+    def test_insert_operations(self, db_ops, setup_test_table):
+        """Test insert operations with comprehensive validation and transaction handling."""
         table_name = setup_test_table
         
-        # Test single insert
+        # Test basic insert
         record = {
             "id": 4,
             "name": "Test 4",
@@ -202,91 +207,484 @@ class TestDatabaseOperations:
             "category": "B",
             "date_field": datetime(2024, 6, 1)
         }
-        result = db_operations.insert_record(table_name, record)
+        result = db_ops.insert_record(table_name, record)
         assert result == 1
         
         # Verify insert
-        query = f"SELECT * FROM [{table_name}] WHERE id = 4"
-        result = db_operations.execute_query(query)
+        query = f"SELECT * FROM [{table_name}] WHERE [id] = 4"
+        result = db_ops.execute_query(query)
         assert len(result) == 1
         assert result[0]["name"] == "Test 4"
+        
+        # Test insert with missing required field
+        with pytest.raises(ValueError) as exc_info:
+            db_ops.insert_record(table_name, {
+                "name": "Test 5",
+                "value": 50.0
+            })
+        assert "required field" in str(exc_info.value).lower()
+            
+        # Test insert with invalid data type
+        with pytest.raises(ValueError) as exc_info:
+            db_ops.insert_record(table_name, {
+                "id": 5,
+                "name": "Test 5",
+                "value": "invalid",  # Should be a number
+                "category": "B",
+                "date_field": datetime(2024, 6, 1)
+            })
+        assert "invalid data type" in str(exc_info.value).lower()
+            
+        # Test insert with duplicate primary key
+        with pytest.raises(ValueError) as exc_info:
+            db_ops.insert_record(table_name, {
+                "id": 4,  # Already exists
+                "name": "Test 6",
+                "value": 60.0,
+                "category": "B",
+                "date_field": datetime(2024, 6, 1)
+            })
+        assert "duplicate" in str(exc_info.value).lower()
+            
+        # Test insert with transaction and commit
+        db_ops.begin_transaction()
+        try:
+            record = {
+                "id": 6,
+                "name": "Test 6",
+                "value": 60.0,
+                "category": "B",
+                "date_field": datetime(2024, 6, 1)
+            }
+            result = db_ops.insert_record(table_name, record)
+            assert result == 1
+            
+            # Verify insert before commit
+            query = f"SELECT * FROM [{table_name}] WHERE [id] = 6"
+            result = db_ops.execute_query(query)
+            assert len(result) == 1
+            
+            db_ops.commit()
+            
+            # Verify insert after commit
+            result = db_ops.execute_query(query)
+            assert len(result) == 1
+            assert result[0]["name"] == "Test 6"
+        except Exception:
+            db_ops.rollback()
+            raise
+            
+        # Test insert with transaction and rollback
+        db_ops.begin_transaction()
+        try:
+            record = {
+                "id": 7,
+                "name": "Test 7",
+                "value": 70.0,
+                "category": "B",
+                "date_field": datetime(2024, 6, 1)
+            }
+            result = db_ops.insert_record(table_name, record)
+            assert result == 1
+            
+            # Verify insert before rollback
+            query = f"SELECT * FROM [{table_name}] WHERE [id] = 7"
+            result = db_ops.execute_query(query)
+            assert len(result) == 1
+            
+            db_ops.rollback()
+            
+            # Verify rollback
+            result = db_ops.execute_query(query)
+            assert len(result) == 0
+        except Exception:
+            db_ops.rollback()
+            raise
+            
+        # Test insert with null values
+        record = {
+            "id": 8,
+            "name": "Test 8",
+            "value": None,  # Null value
+            "category": "B",
+            "date_field": datetime(2024, 6, 1)
+        }
+        result = db_ops.insert_record(table_name, record)
+        assert result == 1
+        
+        # Verify null value insert
+        query = f"SELECT * FROM [{table_name}] WHERE [id] = 8"
+        result = db_ops.execute_query(query)
+        assert len(result) == 1
+        assert result[0]["value"] is None
+        
+        # Test insert with maximum field lengths
+        record = {
+            "id": 9,
+            "name": "A" * 50,  # Maximum length for name field
+            "value": 90.0,
+            "category": "B" * 10,  # Maximum length for category field
+            "date_field": datetime(2024, 6, 1)
+        }
+        result = db_ops.insert_record(table_name, record)
+        assert result == 1
+        
+        # Verify maximum length insert
+        query = f"SELECT * FROM [{table_name}] WHERE [id] = 9"
+        result = db_ops.execute_query(query)
+        assert len(result) == 1
+        assert len(result[0]["name"]) == 50
+        assert len(result[0]["category"]) == 10
+        
+        # Test insert with invalid date format
+        with pytest.raises(ValueError) as exc_info:
+            db_ops.insert_record(table_name, {
+                "id": 10,
+                "name": "Test 10",
+                "value": 100.0,
+                "category": "B",
+                "date_field": "invalid_date"  # Invalid date format
+            })
+        assert "invalid date" in str(exc_info.value).lower()
+        
+        # Test insert with future date validation
+        future_date = datetime.now().replace(year=datetime.now().year + 1)
+        with pytest.raises(ValueError) as exc_info:
+            db_ops.insert_record(table_name, {
+                "id": 11,
+                "name": "Test 11",
+                "value": 110.0,
+                "category": "B",
+                "date_field": future_date  # Future date
+            })
+        assert "future date" in str(exc_info.value).lower()
 
-    def test_update_operations(self, db_operations, setup_test_table):
-        """Test update operations."""
+    def test_update_operations(self, db_ops, setup_test_table):
+        """Test update operations with comprehensive validation and transaction handling."""
         table_name = setup_test_table
         
-        # Update record
+        # Test basic update with column list conditions
         update_data = {
             "id": 1,
             "name": "Updated Test 1",
             "value": 15.5
         }
-        result = db_operations.update_record(table_name, update_data, ["id"])
+        result = db_ops.update_record(table_name, update_data, ["id"])
         assert result == 1
         
         # Verify update
-        query = f"SELECT * FROM [{table_name}] WHERE id = 1"
-        result = db_operations.execute_query(query)
+        query = f"SELECT * FROM [{table_name}] WHERE [id] = 1"
+        result = db_ops.execute_query(query)
         assert len(result) == 1
         assert result[0]["name"] == "Updated Test 1"
         assert result[0]["value"] == 15.5
+        
+        # Test update with invalid data type
+        with pytest.raises(ValueError) as exc_info:
+            db_ops.update_record(table_name, {
+                "id": 2,
+                "value": "invalid"  # Should be a number
+            }, ["id"])
+        assert "invalid data type" in str(exc_info.value).lower()
+            
+        # Test update with non-existent record
+        result = db_ops.update_record(table_name, {
+            "id": 999,
+            "name": "Non-existent"
+        }, ["id"])
+        assert result == 0  # No records updated
+        
+        # Test update with transaction and commit
+        db_ops.begin_transaction()
+        try:
+            update_data = {
+                "id": 2,
+                "name": "Updated Test 2",
+                "value": 25.5
+            }
+            result = db_ops.update_record(table_name, update_data, ["id"])
+            assert result == 1
+            
+            # Verify update before commit
+            query = f"SELECT * FROM [{table_name}] WHERE [id] = 2"
+            result = db_ops.execute_query(query)
+            assert len(result) == 1
+            assert result[0]["name"] == "Updated Test 2"
+            assert result[0]["value"] == 25.5
+            
+            db_ops.commit()
+            
+            # Verify update after commit
+            result = db_ops.execute_query(query)
+            assert len(result) == 1
+            assert result[0]["name"] == "Updated Test 2"
+            assert result[0]["value"] == 25.5
+        except Exception:
+            db_ops.rollback()
+            raise
+            
+        # Test update with transaction and rollback
+        db_ops.begin_transaction()
+        try:
+            update_data = {
+                "id": 3,
+                "name": "Updated Test 3",
+                "value": 35.5
+            }
+            result = db_ops.update_record(table_name, update_data, ["id"])
+            assert result == 1
+            
+            # Verify update before rollback
+            query = f"SELECT * FROM [{table_name}] WHERE [id] = 3"
+            result = db_ops.execute_query(query)
+            assert len(result) == 1
+            assert result[0]["name"] == "Updated Test 3"
+            assert result[0]["value"] == 35.5
+            
+            db_ops.rollback()
+            
+            # Verify rollback
+            result = db_ops.execute_query(query)
+            assert result[0]["name"] == "Test 3"  # Original value
+            assert result[0]["value"] == 30.0  # Original value
+        except Exception:
+            db_ops.rollback()
+            raise
+            
+        # Test update with dictionary conditions
+        update_data = {
+            "category": "C",
+            "value": 100.0
+        }
+        result = db_ops.update_record(table_name, update_data, {
+            "category": "A",
+            "value": 15.5
+        })
+        assert result == 1
+        
+        # Verify multiple condition update
+        query = f"SELECT * FROM [{table_name}] WHERE [category] = 'C'"
+        result = db_ops.execute_query(query)
+        assert len(result) == 1
+        assert result[0]["value"] == 100.0
+        
+        # Test update with null values
+        update_data = {
+            "id": 1,
+            "name": None,  # Null value
+            "value": 50.0
+        }
+        result = db_ops.update_record(table_name, update_data, ["id"])
+        assert result == 1
+        
+        # Verify null value update
+        query = f"SELECT * FROM [{table_name}] WHERE [id] = 1"
+        result = db_ops.execute_query(query)
+        assert len(result) == 1
+        assert result[0]["name"] is None
+        assert result[0]["value"] == 50.0
+        
+        # Test update with maximum field lengths
+        update_data = {
+            "id": 2,
+            "name": "A" * 50,  # Maximum length for name field
+            "category": "B" * 10  # Maximum length for category field
+        }
+        result = db_ops.update_record(table_name, update_data, ["id"])
+        assert result == 1
+        
+        # Verify maximum length update
+        query = f"SELECT * FROM [{table_name}] WHERE [id] = 2"
+        result = db_ops.execute_query(query)
+        assert len(result) == 1
+        assert len(result[0]["name"]) == 50
+        assert len(result[0]["category"]) == 10
+        
+        # Test update with invalid date format
+        with pytest.raises(ValueError) as exc_info:
+            db_ops.update_record(table_name, {
+                "id": 3,
+                "date_field": "invalid_date"  # Invalid date format
+            }, ["id"])
+        assert "invalid date" in str(exc_info.value).lower()
+        
+        # Test update with future date validation
+        future_date = datetime.now().replace(year=datetime.now().year + 1)
+        with pytest.raises(ValueError) as exc_info:
+            db_ops.update_record(table_name, {
+                "id": 3,
+                "date_field": future_date  # Future date
+            }, ["id"])
+        assert "future date" in str(exc_info.value).lower()
+        
+        # Test batch update
+        update_records = [
+            {"id": 1, "name": "Batch Update 1", "value": 100.0},
+            {"id": 2, "name": "Batch Update 2", "value": 200.0},
+            {"id": 3, "name": "Batch Update 3", "value": 300.0}
+        ]
+        result = db_ops.batch_update(table_name, update_records, ["id"])
+        assert result == 3
+        
+        # Verify batch update
+        for i in range(1, 4):
+            query = f"SELECT * FROM [{table_name}] WHERE [id] = {i}"
+            result = db_ops.execute_query(query)
+            assert len(result) == 1
+            assert result[0]["name"] == f"Batch Update {i}"
+            assert result[0]["value"] == float(i) * 100.0
+        
+        # Test update with complex conditions
+        update_data = {
+            "category": "D",
+            "value": 500.0
+        }
+        conditions = {
+            "category": "C",
+            "value": {"min": 50.0, "max": 150.0}
+        }
+        result = db_ops.update_record(table_name, update_data, conditions)
+        assert result == 1
+        
+        # Verify complex condition update
+        query = f"SELECT * FROM [{table_name}] WHERE [category] = 'D'"
+        result = db_ops.execute_query(query)
+        assert len(result) == 1
+        assert result[0]["value"] == 500.0
 
-    def test_delete_operations(self, db_operations, setup_test_table):
+    def test_delete_operations(self, db_ops, setup_test_table):
         """Test delete operations."""
         table_name = setup_test_table
         
         # Delete record
-        result = db_operations.delete_records(table_name, {"id": 1})
+        result = db_ops.delete_records(table_name, {"id": 1})
         assert result == 1
         
         # Verify delete
-        query = f"SELECT * FROM [{table_name}] WHERE id = 1"
-        result = db_operations.execute_query(query)
+        query = f"SELECT * FROM [{table_name}] WHERE [id] = 1"
+        result = db_ops.execute_query(query)
         assert len(result) == 0
-
-    def test_transaction_operations(self, db_operations, setup_test_table):
-        """Test transaction operations."""
-        table_name = setup_test_table
         
-        # Start transaction
-        db_operations.begin_transaction()
-        assert db_operations.in_transaction is True
+        # Test delete with non-existent record
+        result = db_ops.delete_records(table_name, {"id": 999})
+        assert result == 0  # No records deleted
         
-        # Insert record in transaction
-        record = {
-            "id": 4,
-            "name": "Transaction Test",
-            "value": 40.0,
-            "category": "C",
-            "date_field": datetime(2024, 1, 1)
-        }
-        db_operations.insert_record(table_name, record)
+        # Test delete with transaction
+        db_ops.begin_transaction()
+        try:
+            result = db_ops.delete_records(table_name, {"id": 2})
+            assert result == 1
+            db_ops.commit()
+            
+            # Verify delete
+            query = f"SELECT * FROM [{table_name}] WHERE [id] = 2"
+            result = db_ops.execute_query(query)
+            assert len(result) == 0
+        except Exception:
+            db_ops.rollback()
+            raise
+            
+        # Test delete with rollback
+        db_ops.begin_transaction()
+        try:
+            result = db_ops.delete_records(table_name, {"id": 3})
+            assert result == 1
+            db_ops.rollback()
+            
+            # Verify rollback
+            query = f"SELECT * FROM [{table_name}] WHERE [id] = 3"
+            result = db_ops.execute_query(query)
+            assert len(result) == 1  # Record still exists
+        except Exception:
+            db_ops.rollback()
+            raise
+            
+        # Test delete with multiple conditions
+        result = db_ops.delete_records(table_name, {
+            "category": "B",
+            "value": 30.0
+        })
+        assert result == 1
         
-        # Verify record exists
-        query = f"SELECT * FROM [{table_name}] WHERE id = 4"
-        result = db_operations.execute_query(query)
-        assert len(result) == 1
-        
-        # Rollback transaction
-        db_operations.rollback_transaction()
-        assert db_operations.in_transaction is False
-        
-        # Verify record was rolled back
-        result = db_operations.execute_query(query)
+        # Verify multiple condition delete
+        query = f"SELECT * FROM [{table_name}] WHERE [category] = 'B' AND [value] = 30.0"
+        result = db_ops.execute_query(query)
         assert len(result) == 0
+        
+        # Test delete all records
+        result = db_ops.delete_records(table_name, {})
+        assert result > 0
+        
+        # Verify all records deleted
+        query = f"SELECT COUNT(*) as count FROM [{table_name}]"
+        result = db_ops.execute_query(query)
+        assert result[0]["count"] == 0
 
-    def test_initialization(self, db_operations, mock_db_path):
+    def test_transaction_operations(self, db_ops):
+        """Test transaction operations including commit and rollback."""
+        # Create test table
+        db_ops.execute_query("""
+            CREATE TABLE test_transactions (
+                id INTEGER PRIMARY KEY,
+                value TEXT(50)
+            )
+        """)
+        
+        try:
+            # Test 1: Transaction commit
+            db_ops.begin_transaction()
+            db_ops.execute_query(
+                "INSERT INTO test_transactions (id, value) VALUES (?, ?)",
+                (1, "Test 1")
+            )
+            db_ops.commit()
+            
+            # Verify record was committed
+            result = db_ops.execute_query("SELECT * FROM test_transactions WHERE id = 1")
+            assert len(result) == 1
+            assert result[0]["value"] == "Test 1"
+            
+            # Test 2: Transaction rollback
+            db_ops.begin_transaction()
+            db_ops.execute_query(
+                "INSERT INTO test_transactions (id, value) VALUES (?, ?)",
+                (2, "Test 2")
+            )
+            
+            # Verify record is visible within transaction
+            result = db_ops.execute_query("SELECT * FROM test_transactions WHERE id = 2")
+            assert len(result) == 1
+            assert result[0]["value"] == "Test 2"
+            
+            # Rollback transaction
+            db_ops.rollback()
+            
+            # Verify record was not committed
+            result = db_ops.execute_query("SELECT * FROM test_transactions WHERE id = 2")
+            assert len(result) == 0
+            
+        finally:
+            # Cleanup
+            try:
+                db_ops.execute_query("DROP TABLE test_transactions")
+            except Exception:
+                pass  # Ignore cleanup errors
+            
+            if db_ops.in_transaction:
+                db_ops.rollback()
+
+    def test_initialization(self, db_ops, mock_db_path):
         """Test database operations initialization."""
-        assert db_operations.db_path == normalize_path(mock_db_path)
-        assert db_operations.conn is None
-        assert db_operations.cursor is None
+        assert db_ops.db_path == normalize_path(mock_db_path)
+        assert db_ops.conn is None
+        assert db_ops.cursor is None
     
-    def test_connection_string(self, db_operations, tmp_path):
+    def test_connection_string(self, db_ops, tmp_path):
         """Test connection string generation."""
         # Test with absolute path
         test_db = tmp_path / "database.accdb"
-        db_operations.db_path = test_db
-        conn_str = db_operations.conn_str
+        db_ops.db_path = test_db
+        conn_str = db_ops.conn_str
         
         # Basic connection string format checks
         assert "DRIVER={Microsoft Access Driver (*.mdb, *.accdb)}" in conn_str
@@ -300,14 +698,14 @@ class TestDatabaseOperations:
         
         # Test with relative path
         relative_db = Path("database.accdb")
-        db_operations.db_path = relative_db
-        conn_str = db_operations.conn_str
+        db_ops.db_path = relative_db
+        conn_str = db_ops.conn_str
         assert "DRIVER={Microsoft Access Driver (*.mdb, *.accdb)}" in conn_str
         assert "DBQ=" in conn_str
         expected_path = str(relative_db.absolute()).replace("\\", "\\\\")
         assert expected_path == conn_str.split("DBQ=")[1]
     
-    def test_get_tables(self, db_operations, mocker):
+    def test_get_tables(self, db_ops, mocker):
         """Test getting list of tables."""
         # Mock the cursor and its tables method
         mock_cursor = mocker.MagicMock()
@@ -316,24 +714,24 @@ class TestDatabaseOperations:
             mocker.MagicMock(table_name="Table2", table_type="VIEW"),
             mocker.MagicMock(table_name="Table3", table_type="TABLE")
         ]
-        db_operations.cursor = mock_cursor
+        db_ops.cursor = mock_cursor
         
-        tables = db_operations.get_tables()
+        tables = db_ops.get_tables()
         assert len(tables) == 2
         assert "Table1" in tables
         assert "Table3" in tables
     
-    def test_execute_query_select(self, db_operations, mocker):
+    def test_execute_query_select(self, db_ops, mocker):
         """Test executing a SELECT query."""
         # Create test table
         columns = {
             'id': 'COUNTER',
             'name': 'TEXT(50)'
         }
-        db_operations.create_table('test_table', columns, ['id'])
+        db_ops.create_table('test_table', columns, ['id'])
         
         # Insert test data
-        db_operations.execute_query(
+        db_ops.execute_query(
             "INSERT INTO test_table (name) VALUES (?)",
             ("Test1",)
         )
@@ -342,38 +740,38 @@ class TestDatabaseOperations:
         mock_cursor = mocker.MagicMock()
         mock_cursor.description = [("id",), ("name",)]
         mock_cursor.fetchall.return_value = [(1, "Test1"), (2, "Test2")]
-        db_operations.cursor = mock_cursor
+        db_ops.cursor = mock_cursor
         
-        results = db_operations.execute_query("SELECT * FROM test_table")
+        results = db_ops.execute_query("SELECT * FROM test_table")
         assert len(results) == 2
         assert results[0]['id'] == 1
         assert results[0]['name'] == "Test1"
         
         # Cleanup
-        db_operations.execute_query("DROP TABLE test_table")
+        db_ops.execute_query("DROP TABLE test_table")
     
-    def test_execute_query_insert(self, db_operations, mocker):
+    def test_execute_query_insert(self, db_ops, mocker):
         """Test executing an INSERT query."""
         # Mock the cursor and its methods
         mock_cursor = mocker.MagicMock()
         mock_cursor.rowcount = 1
-        db_operations.cursor = mock_cursor
-        db_operations.conn = mocker.MagicMock()
+        db_ops.cursor = mock_cursor
+        db_ops.conn = mocker.MagicMock()
         
-        affected_rows = db_operations.execute_query(
+        affected_rows = db_ops.execute_query(
             "INSERT INTO test_table (name) VALUES (?)",
             ("Test",)
         )
         assert affected_rows == 1
     
-    def test_get_table_columns(self, db_operations, mocker):
+    def test_get_table_columns(self, db_ops, mocker):
         """Test getting table columns."""
         # Mock the cursor and its description
         mock_cursor = mocker.MagicMock()
         mock_cursor.description = [("id",), ("name",), ("value",)]
-        db_operations.cursor = mock_cursor
+        db_ops.cursor = mock_cursor
         
-        columns = db_operations.get_table_columns("test_table")
+        columns = db_ops.get_table_columns("test_table")
         assert len(columns) == 3
         assert "id" in columns
         assert "name" in columns
@@ -393,7 +791,7 @@ class TestDatabaseOperations:
         ]
         for record in test_data:
             self.db.execute_query(insert_sql, record)
-        self.db.commit_transaction()
+        self.db.commit()
         
         # Test count with year filter
         count = self.db.count_records(self.test_table_name, year=2023)
@@ -417,7 +815,7 @@ class TestDatabaseOperations:
         ]
         for record in test_data:
             self.db.execute_query(insert_sql, record)
-        self.db.commit_transaction()
+        self.db.commit()
         
         # Test deletion
         self.db.delete_year_data(self.test_table_name, 2023)
@@ -445,7 +843,7 @@ class TestDatabaseOperations:
         ]
         for record in test_data:
             self.db.execute_query(insert_sql, record)
-        self.db.commit_transaction()
+        self.db.commit()
         
         # Test reading with filters
         filters = {
@@ -458,7 +856,7 @@ class TestDatabaseOperations:
         assert records[0]['value'] == 20.0
         assert records[0]['category'] == 'A'
 
-    def test_read_records_with_sorting(self, db_operations, mocker):
+    def test_read_records_with_sorting(self, db_ops, mocker):
         """Test read_records with sorting."""
         # Create test table
         columns = {
@@ -467,7 +865,7 @@ class TestDatabaseOperations:
             'value': 'DOUBLE',
             'date_field': 'DATETIME'
         }
-        db_operations.create_table('test_table', columns, ['id'])
+        db_ops.create_table('test_table', columns, ['id'])
         
         try:
             # Insert test data
@@ -478,7 +876,7 @@ class TestDatabaseOperations:
             ]
             
             for record in test_data:
-                db_operations.insert_record('test_table', record)
+                db_ops.insert_record('test_table', record)
             
             # Mock the cursor and its methods
             mock_cursor = mocker.MagicMock()
@@ -488,10 +886,10 @@ class TestDatabaseOperations:
                 (2, "Test2", 20.0, "2024-01-02"),
                 (1, "Test1", 10.0, "2024-01-01")
             ]
-            db_operations.cursor = mock_cursor
+            db_ops.cursor = mock_cursor
             
             # Test descending sort
-            results = db_operations.read_records("test_table", sort_by="value", sort_order="DESC")
+            results = db_ops.read_records("test_table", sort_by="value", sort_order="DESC")
             
             assert len(results) == 3
             assert results[0]['value'] == 30.0
@@ -504,7 +902,7 @@ class TestDatabaseOperations:
                 (2, "Test2", 20.0, "2024-01-02"),
                 (3, "Test3", 30.0, "2024-01-03")
             ]
-            results = db_operations.read_records("test_table", sort_by="value", sort_order="ASC")
+            results = db_ops.read_records("test_table", sort_by="value", sort_order="ASC")
             
             assert len(results) == 3
             assert results[0]['value'] == 10.0
@@ -513,181 +911,181 @@ class TestDatabaseOperations:
             
         finally:
             # Clean up
-            if db_operations.conn:
-                db_operations.execute_query('DROP TABLE test_table')
-                db_operations.close()
+            if db_ops.conn:
+                db_ops.execute_query('DROP TABLE test_table')
+                db_ops.close()
 
-    def test_read_records_with_pagination(self, db_operations, mocker):
+    def test_read_records_with_pagination(self, db_ops, mocker):
         """Test read_records with pagination."""
         mock_cursor = mocker.MagicMock()
         mock_cursor.description = [("id",), ("name",)]
         mock_cursor.fetchall.return_value = [(3, "Test3"), (4, "Test4")]
-        db_operations.cursor = mock_cursor
+        db_ops.cursor = mock_cursor
         
-        results = db_operations.read_records("test_table", limit=2, offset=2)
+        results = db_ops.read_records("test_table", limit=2, offset=2)
         assert len(results) == 2
         assert results[0]["id"] == 3
         
-    def test_build_query_basic(self, db_operations):
+    def test_build_query_basic(self, db_ops):
         """Test basic query building."""
-        query = db_operations.build_query("test_table")
+        query = db_ops.build_query("test_table")
         assert query == "SELECT * FROM [test_table]"
         
-    def test_build_query_with_columns(self, db_operations):
+    def test_build_query_with_columns(self, db_ops):
         """Test query building with specific columns."""
-        query = db_operations.build_query("test_table", columns=["id", "name"])
+        query = db_ops.build_query("test_table", columns=["id", "name"])
         assert query == "SELECT [id], [name] FROM [test_table]"
         
-    def test_build_query_with_joins(self, db_operations):
+    def test_build_query_with_joins(self, db_ops):
         """Test query building with joins."""
         joins = [{"table": "other_table", "on": "test_table.id = other_table.test_id"}]
-        query = db_operations.build_query("test_table", joins=joins)
+        query = db_ops.build_query("test_table", joins=joins)
         assert "INNER JOIN [other_table] ON test_table.id = other_table.test_id" in query
         
-    def test_build_query_with_filters(self, db_operations):
+    def test_build_query_with_filters(self, db_ops):
         """Test query building with filters."""
         filters = {"name": "Test1", "status": "active"}
-        query = db_operations.build_query("test_table", filters=filters)
+        query = db_ops.build_query("test_table", filters=filters)
         assert "[name] = ?" in query
         assert "[status] = ?" in query
         assert "WHERE" in query
         
-    def test_build_query_with_group_by(self, db_operations):
+    def test_build_query_with_group_by(self, db_ops):
         """Test query building with GROUP BY."""
-        query = db_operations.build_query("test_table", group_by=["status"])
+        query = db_ops.build_query("test_table", group_by=["status"])
         assert "GROUP BY [status]" in query
         
-    def test_build_query_with_having(self, db_operations):
+    def test_build_query_with_having(self, db_ops):
         """Test query building with HAVING clause."""
         having = {"count": 5}
-        query = db_operations.build_query("test_table", having=having)
+        query = db_ops.build_query("test_table", having=having)
         assert "HAVING [count] = ?" in query
         
-    def test_build_query_with_sorting(self, db_operations):
+    def test_build_query_with_sorting(self, db_ops):
         """Test query building with sorting."""
-        query = db_operations.build_query("test_table", sort_by=["name"], sort_desc=True)
+        query = db_ops.build_query("test_table", sort_by=["name"], sort_desc=True)
         assert "ORDER BY [name] DESC" in query
         
-    def test_build_query_with_pagination(self, db_operations):
+    def test_build_query_with_pagination(self, db_ops):
         """Test query building with pagination."""
-        query = db_operations.build_query("test_table", limit=10, offset=20)
+        query = db_ops.build_query("test_table", limit=10, offset=20)
         assert "LIMIT 10 OFFSET 20" in query
 
-    def test_read_records_with_in_clause(self, db_operations, mocker):
+    def test_read_records_with_in_clause(self, db_ops, mocker):
         """Test read_records with IN clause."""
         mock_cursor = mocker.MagicMock()
         mock_cursor.description = [("id",), ("name",)]
         mock_cursor.fetchall.return_value = [(1, "Test1"), (2, "Test2")]
-        db_operations.cursor = mock_cursor
+        db_ops.cursor = mock_cursor
         
         filters = {"id": [1, 2, 3]}
-        results = db_operations.read_records("test_table", filters=filters)
+        results = db_ops.read_records("test_table", filters=filters)
         assert len(results) == 2
         assert results[0]["id"] in [1, 2]
         
-    def test_read_records_with_date_range(self, db_operations, mocker):
+    def test_read_records_with_date_range(self, db_ops, mocker):
         """Test read_records with date range filtering."""
         mock_cursor = mocker.MagicMock()
         mock_cursor.description = [("id",), ("date",)]
         mock_cursor.fetchall.return_value = [(1, "2023-01-01"), (2, "2023-01-15")]
-        db_operations.cursor = mock_cursor
+        db_ops.cursor = mock_cursor
         
         date_range = {
             "column": "date",
             "start_date": "2023-01-01",
             "end_date": "2023-01-31"
         }
-        results = db_operations.read_records("test_table", date_range=date_range)
+        results = db_ops.read_records("test_table", date_range=date_range)
         assert len(results) == 2
         assert results[0]["date"] == "2023-01-01"
         
-    def test_read_records_with_custom_filters(self, db_operations, mocker):
+    def test_read_records_with_custom_filters(self, db_ops, mocker):
         """Test read_records with custom SQL filters."""
         mock_cursor = mocker.MagicMock()
         mock_cursor.description = [("id",), ("name",)]
         mock_cursor.fetchall.return_value = [(1, "Test1")]
-        db_operations.cursor = mock_cursor
+        db_ops.cursor = mock_cursor
         
         custom_filters = ["LENGTH([name]) > 4", "[id] % 2 = 1"]
-        results = db_operations.read_records("test_table", custom_filters=custom_filters)
+        results = db_ops.read_records("test_table", custom_filters=custom_filters)
         assert len(results) == 1
         assert results[0]["id"] == 1
         
-    def test_aggregate_query_basic(self, db_operations, mocker):
+    def test_aggregate_query_basic(self, db_ops, mocker):
         """Test basic aggregate query."""
         mock_cursor = mocker.MagicMock()
         mock_cursor.description = [("total_amount",), ("count",)]
         mock_cursor.fetchall.return_value = [(1000, 5)]
-        db_operations.cursor = mock_cursor
+        db_ops.cursor = mock_cursor
         
         aggregates = {
             "total_amount": "SUM(amount)",
             "count": "COUNT(*)"
         }
-        results = db_operations.aggregate_query("test_table", aggregates)
+        results = db_ops.aggregate_query("test_table", aggregates)
         assert len(results) == 1
         assert results[0]["total_amount"] == 1000
         assert results[0]["count"] == 5
         
-    def test_aggregate_query_with_grouping(self, db_operations, mocker):
+    def test_aggregate_query_with_grouping(self, db_ops, mocker):
         """Test aggregate query with grouping."""
         mock_cursor = mocker.MagicMock()
         mock_cursor.description = [("category",), ("total_amount",)]
         mock_cursor.fetchall.return_value = [("A", 500), ("B", 300)]
-        db_operations.cursor = mock_cursor
+        db_ops.cursor = mock_cursor
         
         aggregates = {"total_amount": "SUM(amount)"}
         group_by = ["category"]
-        results = db_operations.aggregate_query("test_table", aggregates, group_by)
+        results = db_ops.aggregate_query("test_table", aggregates, group_by)
         assert len(results) == 2
         assert results[0]["category"] == "A"
         assert results[0]["total_amount"] == 500
         
-    def test_aggregate_query_with_having(self, db_operations, mocker):
+    def test_aggregate_query_with_having(self, db_ops, mocker):
         """Test aggregate query with HAVING clause."""
         mock_cursor = mocker.MagicMock()
         mock_cursor.description = [("category",), ("total_amount",)]
         mock_cursor.fetchall.return_value = [("A", 1000)]
-        db_operations.cursor = mock_cursor
+        db_ops.cursor = mock_cursor
         
         aggregates = {"total_amount": "SUM(amount)"}
         group_by = ["category"]
         having = {"total_amount": 1000}
-        results = db_operations.aggregate_query("test_table", aggregates, group_by, having=having)
+        results = db_ops.aggregate_query("test_table", aggregates, group_by, having=having)
         assert len(results) == 1
         assert results[0]["total_amount"] == 1000
         
-    def test_subquery_basic(self, db_operations, mocker):
+    def test_subquery_basic(self, db_ops, mocker):
         """Test basic subquery functionality."""
         mock_cursor = mocker.MagicMock()
         mock_cursor.description = [("id",), ("name",)]
         mock_cursor.fetchall.return_value = [(1, "Test1")]
-        db_operations.cursor = mock_cursor
+        db_ops.cursor = mock_cursor
         
         subquery = "SELECT id FROM other_table WHERE status = ?"
         subquery_params = ("active",)
-        results = db_operations.subquery("test_table", subquery, subquery_params)
+        results = db_ops.subquery("test_table", subquery, subquery_params)
         assert len(results) == 1
         assert results[0]["id"] == 1
         
-    def test_subquery_with_filters(self, db_operations, mocker):
+    def test_subquery_with_filters(self, db_ops, mocker):
         """Test subquery with additional filters."""
         mock_cursor = mocker.MagicMock()
         mock_cursor.description = [("id",), ("name",)]
         mock_cursor.fetchall.return_value = [(1, "Test1")]
-        db_operations.cursor = mock_cursor
+        db_ops.cursor = mock_cursor
         
         subquery = "SELECT id FROM other_table WHERE status = ?"
         subquery_params = ("active",)
         filters = {"name": "Test1"}
-        results = db_operations.subquery("test_table", subquery, subquery_params, filters)
+        results = db_ops.subquery("test_table", subquery, subquery_params, filters)
         assert len(results) == 1
         assert results[0]["name"] == "Test1"
 
-    def test_update_record(self, db_operations):
+    def test_update_record(self, db_ops):
         """Test updating a single record."""
         # Create test table
-        db_operations.execute_query("""
+        db_ops.execute_query("""
             CREATE TABLE test_update (
                 id INTEGER PRIMARY KEY,
                 name TEXT(50),
@@ -698,7 +1096,7 @@ class TestDatabaseOperations:
         
         try:
             # Insert test record
-            db_operations.execute_query(
+            db_ops.execute_query(
                 "INSERT INTO test_update (id, name, value, status) VALUES (?, ?, ?, ?)",
                 (1, "Test", 10.5, "active")
             )
@@ -710,23 +1108,23 @@ class TestDatabaseOperations:
                 "value": 20.75,
                 "status": "inactive"
             }
-            result = db_operations.update_record("test_update", record, ["id"])
+            result = db_ops.update_record("test_update", record, ["id"])
             assert result == 1
             
             # Verify update
-            results = db_operations.execute_query("SELECT * FROM test_update WHERE id = 1")
+            results = db_ops.execute_query("SELECT * FROM test_update WHERE id = 1")
             assert len(results) == 1
             assert results[0]["name"] == "Updated"
             assert results[0]["value"] == 20.75
             assert results[0]["status"] == "inactive"
             
         finally:
-            db_operations.execute_query("DROP TABLE test_update")
+            db_ops.execute_query("DROP TABLE test_update")
 
-    def test_update_record_nonexistent(self, db_operations):
+    def test_update_record_nonexistent(self, db_ops):
         """Test updating a non-existent record."""
         # Create test table
-        db_operations.execute_query("""
+        db_ops.execute_query("""
             CREATE TABLE test_update_nonexistent (
                 id INTEGER PRIMARY KEY,
                 name TEXT(50)
@@ -736,16 +1134,16 @@ class TestDatabaseOperations:
         try:
             # Try to update non-existent record
             record = {"id": 1, "name": "Test"}
-            result = db_operations.update_record("test_update_nonexistent", record, ["id"])
+            result = db_ops.update_record("test_update_nonexistent", record, ["id"])
             assert result == 0
             
         finally:
-            db_operations.execute_query("DROP TABLE test_update_nonexistent")
+            db_ops.execute_query("DROP TABLE test_update_nonexistent")
 
-    def test_batch_update(self, db_operations):
+    def test_batch_update(self, db_ops):
         """Test batch updating multiple records."""
         # Create test table
-        db_operations.execute_query("""
+        db_ops.execute_query("""
             CREATE TABLE test_batch_update (
                 id INTEGER PRIMARY KEY,
                 name TEXT(50),
@@ -756,7 +1154,7 @@ class TestDatabaseOperations:
         try:
             # Insert test records
             for i in range(1, 6):
-                db_operations.execute_query(
+                db_ops.execute_query(
                     "INSERT INTO test_batch_update (id, name, value) VALUES (?, ?, ?)",
                     (i, f"Test {i}", float(i) * 10)
                 )
@@ -769,11 +1167,11 @@ class TestDatabaseOperations:
             ]
             
             # Update records in batch
-            result = db_operations.batch_update("test_batch_update", records, ["id"], batch_size=2)
+            result = db_ops.batch_update("test_batch_update", records, ["id"], batch_size=2)
             assert result == 3
             
             # Verify updates
-            results = db_operations.execute_query("SELECT * FROM test_batch_update ORDER BY id")
+            results = db_ops.execute_query("SELECT * FROM test_batch_update ORDER BY id")
             assert len(results) == 5
             assert results[0]["name"] == "Updated 1"
             assert results[0]["value"] == 100.0
@@ -783,12 +1181,12 @@ class TestDatabaseOperations:
             assert results[2]["value"] == 300.0
             
         finally:
-            db_operations.execute_query("DROP TABLE test_batch_update")
+            db_ops.execute_query("DROP TABLE test_batch_update")
 
-    def test_batch_update_empty(self, db_operations):
+    def test_batch_update_empty(self, db_ops):
         """Test batch update with empty records list."""
         # Create test table
-        db_operations.execute_query("""
+        db_ops.execute_query("""
             CREATE TABLE test_batch_update_empty (
                 id INTEGER PRIMARY KEY,
                 name TEXT(50)
@@ -797,16 +1195,16 @@ class TestDatabaseOperations:
         
         try:
             # Try batch update with empty list
-            result = db_operations.batch_update("test_batch_update_empty", [], ["id"])
+            result = db_ops.batch_update("test_batch_update_empty", [], ["id"])
             assert result == 0
             
         finally:
-            db_operations.execute_query("DROP TABLE test_batch_update_empty")
+            db_ops.execute_query("DROP TABLE test_batch_update_empty")
 
-    def test_update_with_conditions(self, db_operations):
+    def test_update_with_conditions(self, db_ops):
         """Test updating records with conditions."""
         # Create test table
-        db_operations.execute_query("""
+        db_ops.execute_query("""
             CREATE TABLE test_update_conditions (
                 id INTEGER PRIMARY KEY,
                 category TEXT(50),
@@ -825,7 +1223,7 @@ class TestDatabaseOperations:
             ]
             
             for record in test_data:
-                db_operations.execute_query(
+                db_ops.execute_query(
                     "INSERT INTO test_update_conditions VALUES (?, ?, ?, ?)",
                     record
                 )
@@ -833,11 +1231,11 @@ class TestDatabaseOperations:
             # Update records with conditions
             updates = {"status": "completed", "value": 50.0}
             conditions = {"category": "A"}
-            result = db_operations.update_with_conditions("test_update_conditions", updates, conditions)
+            result = db_ops.update_with_conditions("test_update_conditions", updates, conditions)
             assert result == 2
             
             # Verify updates
-            results = db_operations.execute_query(
+            results = db_ops.execute_query(
                 "SELECT * FROM test_update_conditions WHERE category = 'A'"
             )
             assert len(results) == 2
@@ -845,12 +1243,12 @@ class TestDatabaseOperations:
             assert all(r["value"] == 50.0 for r in results)
             
         finally:
-            db_operations.execute_query("DROP TABLE test_update_conditions")
+            db_ops.execute_query("DROP TABLE test_update_conditions")
 
-    def test_update_with_conditions_no_match(self, db_operations):
+    def test_update_with_conditions_no_match(self, db_ops):
         """Test updating records with conditions that match no records."""
         # Create test table
-        db_operations.execute_query("""
+        db_ops.execute_query("""
             CREATE TABLE test_update_conditions_no_match (
                 id INTEGER PRIMARY KEY,
                 category TEXT(50)
@@ -859,7 +1257,7 @@ class TestDatabaseOperations:
         
         try:
             # Insert test record
-            db_operations.execute_query(
+            db_ops.execute_query(
                 "INSERT INTO test_update_conditions_no_match VALUES (?, ?)",
                 (1, "A")
             )
@@ -867,7 +1265,7 @@ class TestDatabaseOperations:
             # Try to update with non-matching condition
             updates = {"category": "B"}
             conditions = {"category": "C"}
-            result = db_operations.update_with_conditions(
+            result = db_ops.update_with_conditions(
                 "test_update_conditions_no_match", 
                 updates, 
                 conditions
@@ -875,12 +1273,12 @@ class TestDatabaseOperations:
             assert result == 0
             
         finally:
-            db_operations.execute_query("DROP TABLE test_update_conditions_no_match")
+            db_ops.execute_query("DROP TABLE test_update_conditions_no_match")
 
-    def test_update_transaction_rollback(self, db_operations):
+    def test_update_transaction_rollback(self, db_ops):
         """Test transaction rollback during update."""
         # Create test table
-        db_operations.execute_query("""
+        db_ops.execute_query("""
             CREATE TABLE test_update_transaction (
                 id INTEGER PRIMARY KEY,
                 name TEXT(50) NOT NULL,
@@ -890,33 +1288,33 @@ class TestDatabaseOperations:
         
         try:
             # Insert test record
-            db_operations.execute_query(
+            db_ops.execute_query(
                 "INSERT INTO test_update_transaction VALUES (?, ?, ?)",
                 (1, "Test", 10.0)
             )
             
             # Start transaction
-            db_operations.begin_transaction()
+            db_ops.begin_transaction()
             
             # Update record
             record = {"id": 1, "name": "Updated", "value": 20.0}
-            db_operations.update_record("test_update_transaction", record, ["id"])
+            db_ops.update_record("test_update_transaction", record, ["id"])
             
             # Try to update with invalid data (should fail)
             with pytest.raises(pyodbc.Error):
                 invalid_record = {"id": 1, "name": None, "value": 30.0}
-                db_operations.update_record("test_update_transaction", invalid_record, ["id"])
+                db_ops.update_record("test_update_transaction", invalid_record, ["id"])
             
             # Verify rollback
-            results = db_operations.execute_query("SELECT * FROM test_update_transaction")
+            results = db_ops.execute_query("SELECT * FROM test_update_transaction")
             assert len(results) == 1
             assert results[0]["name"] == "Test"
             assert results[0]["value"] == 10.0
             
         finally:
-            db_operations.execute_query("DROP TABLE test_update_transaction")
+            db_ops.execute_query("DROP TABLE test_update_transaction")
 
-    def test_delete_records(self, db_operations, mock_db_path):
+    def test_delete_records(self, db_ops, mock_db_path):
         """Test deleting records from a table."""
         # Create test table
         table_name = "test_delete_table"
@@ -952,7 +1350,7 @@ class TestDatabaseOperations:
         # Cleanup
         self.db.drop_table(table_name)
 
-    def test_soft_delete(self, db_operations, mock_db_path):
+    def test_soft_delete(self, db_ops, mock_db_path):
         """Test soft delete functionality."""
         # Create test table with is_deleted column
         table_name = "test_soft_delete_table"
@@ -989,7 +1387,7 @@ class TestDatabaseOperations:
         # Cleanup
         self.db.drop_table(table_name)
 
-    def test_cascade_delete(self, db_operations, mock_db_path):
+    def test_cascade_delete(self, db_ops, mock_db_path):
         """Test cascade delete functionality."""
         # Create parent and child tables
         parent_table = "test_parent_table"
@@ -1050,7 +1448,7 @@ class TestDatabaseOperations:
         self.db.drop_table(child_table)
         self.db.drop_table(parent_table)
 
-    def test_delete_with_transaction(self, db_operations, mock_db_path):
+    def test_delete_with_transaction(self, db_ops, mock_db_path):
         """Test delete operations within a transaction."""
         # Create test table
         table_name = "test_transaction_delete_table"
@@ -1087,10 +1485,10 @@ class TestDatabaseOperations:
             assert len(remaining_records) == 2
             
             # Commit transaction
-            self.db.commit_transaction()
+            self.db.commit()
             
         except Exception:
-            self.db.rollback_transaction()
+            self.db.rollback()
             raise
             
         # Verify deletion after commit
@@ -1101,7 +1499,7 @@ class TestDatabaseOperations:
         # Cleanup
         self.db.drop_table(table_name)
 
-    def test_delete_transaction_rollback(self, db_operations, mock_db_path):
+    def test_delete_transaction_rollback(self, db_ops, mock_db_path):
         """Test rollback of delete operations."""
         # Create test table
         table_name = "test_rollback_delete_table"
@@ -1141,7 +1539,7 @@ class TestDatabaseOperations:
             raise Exception("Simulated error")
             
         except Exception:
-            self.db.rollback_transaction()
+            self.db.rollback()
             
         # Verify rollback
         remaining_records = self.db.read_records(table_name)
@@ -1151,7 +1549,7 @@ class TestDatabaseOperations:
         # Cleanup
         self.db.drop_table(table_name)
 
-    def test_create_table(self, db_operations):
+    def test_create_table(self, db_ops):
         """Test creating a table with proper Access syntax."""
         columns = {
             'id': 'INTEGER',
@@ -1161,30 +1559,30 @@ class TestDatabaseOperations:
         }
         
         try:
-            db_operations.create_table('test_create', columns, ['id'])
+            db_ops.create_table('test_create', columns, ['id'])
             
             # Verify table was created
-            tables = db_operations.get_tables()
+            tables = db_ops.get_tables()
             assert 'test_create' in tables
             
             # Verify column types
-            columns = db_operations.get_table_columns('test_create')
+            columns = db_ops.get_table_columns('test_create')
             assert 'id' in columns
             assert 'name' in columns
             assert 'value' in columns
             assert 'created_date' in columns
             
         finally:
-            db_operations.execute_query('DROP TABLE test_create')
+            db_ops.execute_query('DROP TABLE test_create')
             
-    def test_alter_table(self, db_operations):
+    def test_alter_table(self, db_ops):
         """Test altering a table with proper Access syntax."""
         # Create initial table
         columns = {
             'id': 'INTEGER',
             'name': 'TEXT'
         }
-        db_operations.create_table('test_alter', columns, ['id'])
+        db_ops.create_table('test_alter', columns, ['id'])
         
         try:
             # Add new column
@@ -1192,61 +1590,60 @@ class TestDatabaseOperations:
                 'value': 'DECIMAL',
                 'created_date': 'DATETIME'
             }
-            db_operations.alter_table('test_alter', add_columns=add_columns)
+            db_ops.alter_table('test_alter', add_columns=add_columns)
             
             # Verify new columns
-            columns = db_operations.get_table_columns('test_alter')
+            columns = db_ops.get_table_columns('test_alter')
             assert 'value' in columns
             assert 'created_date' in columns
             
             # Drop column
-            db_operations.alter_table('test_alter', drop_columns=['value'])
+            db_ops.alter_table('test_alter', drop_columns=['value'])
             
             # Verify column was dropped
-            columns = db_operations.get_table_columns('test_alter')
+            columns = db_ops.get_table_columns('test_alter')
             assert 'value' not in columns
             
         finally:
-            db_operations.execute_query('DROP TABLE test_alter')
+            db_ops.execute_query('DROP TABLE test_alter')
             
-    def test_add_foreign_key(self, db_operations):
-        """Test adding a foreign key with proper Access syntax."""
+    def test_add_foreign_key(self, db_ops):
+        """Test adding a foreign key constraint."""
         # Create parent table
-        parent_columns = {
-            'id': 'INTEGER',
-            'name': 'TEXT'
-        }
-        db_operations.create_table('test_parent', parent_columns, ['id'])
+        db_ops.create_table(
+            "test_parent",
+            ["id INTEGER PRIMARY KEY", "name TEXT"],
+            primary_keys=["id"]
+        )
         
         # Create child table
-        child_columns = {
-            'id': 'INTEGER',
-            'parent_id': 'INTEGER',
-            'value': 'TEXT'
-        }
-        db_operations.create_table('test_child', child_columns, ['id'])
+        db_ops.create_table(
+            "test_child",
+            ["id INTEGER PRIMARY KEY", "parent_id INTEGER", "value TEXT"],
+            primary_keys=["id"]
+        )
         
-        try:
-            # Add foreign key
-            db_operations.add_foreign_key('test_child', 'parent_id', 'test_parent', 'id')
-            
-            # Verify foreign key was added
-            # Note: Access doesn't provide a direct way to query foreign keys
-            # We'll verify by attempting to insert invalid data
-            db_operations.insert_data('test_parent', {'id': 1, 'name': 'Test'})
-            
-            # Valid foreign key
-            db_operations.insert_data('test_child', {'id': 1, 'parent_id': 1, 'value': 'Test'})
-            
-            # Invalid foreign key should fail
-            with pytest.raises(Exception):
-                db_operations.insert_data('test_child', {'id': 2, 'parent_id': 999, 'value': 'Test'})
-                
-        finally:
-            db_operations.execute_query('DROP TABLE test_child')
-            db_operations.execute_query('DROP TABLE test_parent')
-            
-    def test_read_records_with_limit(self, db_operations):
+        # Add foreign key constraint
+        db_ops.add_foreign_key(
+            "test_child",
+            "parent_id",
+            "test_parent",
+            "id"
+        )
+        
+        # Insert valid record
+        db_ops.insert_record("test_parent", {"id": 1, "name": "Parent 1"})
+        db_ops.insert_record("test_child", {"id": 1, "parent_id": 1, "value": "Child 1"})
+        
+        # Verify foreign key constraint
+        with pytest.raises(Exception):
+            db_ops.insert_record("test_child", {"id": 2, "parent_id": 999, "value": "Invalid"})
+        
+        # Cleanup
+        db_ops.drop_table("test_child")
+        db_ops.drop_table("test_parent")
+
+    def test_read_records_with_limit(self, db_ops):
         """Test reading records with LIMIT using Access TOP syntax."""
         # Create test table
         columns = {
@@ -1254,29 +1651,29 @@ class TestDatabaseOperations:
             'name': 'TEXT',
             'value': 'DECIMAL'
         }
-        db_operations.create_table('test_limit', columns, ['id'])
+        db_ops.create_table('test_limit', columns, ['id'])
         
         try:
             # Insert test data
             for i in range(10):
-                db_operations.insert_data('test_limit', {
+                db_ops.insert_data('test_limit', {
                     'id': i + 1,
                     'name': f'Test {i + 1}',
                     'value': float(i + 1)
                 })
             
             # Test with limit
-            results = db_operations.read_records('test_limit', limit=5)
+            results = db_ops.read_records('test_limit', limit=5)
             assert len(results) == 5
             
             # Test with limit and offset (should raise NotImplementedError)
             with pytest.raises(NotImplementedError):
-                db_operations.read_records('test_limit', limit=5, offset=5)
+                db_ops.read_records('test_limit', limit=5, offset=5)
                 
         finally:
-            db_operations.execute_query('DROP TABLE test_limit')
+            db_ops.execute_query('DROP TABLE test_limit')
             
-    def test_update_record(self, db_operations):
+    def test_update_record(self, db_ops):
         """Test updating a record with proper Access syntax."""
         # Create test table
         columns = {
@@ -1285,11 +1682,11 @@ class TestDatabaseOperations:
             'value': 'DECIMAL',
             'status': 'TEXT'
         }
-        db_operations.create_table('test_update', columns, ['id'])
+        db_ops.create_table('test_update', columns, ['id'])
         
         try:
             # Insert test record
-            db_operations.insert_data('test_update', {
+            db_ops.insert_data('test_update', {
                 'id': 1,
                 'name': 'Test',
                 'value': 10.5,
@@ -1297,7 +1694,7 @@ class TestDatabaseOperations:
             })
             
             # Update record
-            result = db_operations.update_data(
+            result = db_ops.update_data(
                 'test_update',
                 {'name': 'Updated', 'value': 20.75, 'status': 'inactive'},
                 'id = ?',
@@ -1306,16 +1703,16 @@ class TestDatabaseOperations:
             assert result == 1
             
             # Verify update
-            results = db_operations.read_records('test_update', {'id': 1})
+            results = db_ops.read_records('test_update', {'id': 1})
             assert len(results) == 1
             assert results[0]['name'] == 'Updated'
             assert results[0]['value'] == 20.75
             assert results[0]['status'] == 'inactive'
             
         finally:
-            db_operations.execute_query('DROP TABLE test_update')
+            db_ops.execute_query('DROP TABLE test_update')
             
-    def test_delete_data(self, db_operations):
+    def test_delete_data(self, db_ops):
         """Test deleting data with proper Access syntax."""
         # Create test table
         columns = {
@@ -1323,19 +1720,19 @@ class TestDatabaseOperations:
             'name': 'TEXT',
             'value': 'DECIMAL'
         }
-        db_operations.create_table('test_delete', columns, ['id'])
+        db_ops.create_table('test_delete', columns, ['id'])
         
         try:
             # Insert test data
             for i in range(5):
-                db_operations.insert_data('test_delete', {
+                db_ops.insert_data('test_delete', {
                     'id': i + 1,
                     'name': f'Test {i + 1}',
                     'value': float(i + 1)
                 })
             
             # Delete records
-            result = db_operations.delete_data(
+            result = db_ops.delete_data(
                 'test_delete',
                 'value > ?',
                 {'value': 3}
@@ -1343,22 +1740,22 @@ class TestDatabaseOperations:
             assert result == 2
             
             # Verify deletion
-            results = db_operations.read_records('test_delete')
+            results = db_ops.read_records('test_delete')
             assert len(results) == 3
             
         finally:
-            db_operations.execute_query('DROP TABLE test_delete')
+            db_ops.execute_query('DROP TABLE test_delete')
 
     def test_get_tables(self):
         """Test getting list of tables."""
         # Create test tables
-        self.db_operations.execute_query("""
+        self.db.execute_query("""
             CREATE TABLE test_table1 (
                 id LONG PRIMARY KEY,
                 name VARCHAR(255)
             )
         """)
-        self.db_operations.execute_query("""
+        self.db.execute_query("""
             CREATE TABLE test_table2 (
                 id LONG PRIMARY KEY,
                 value DOUBLE
@@ -1366,20 +1763,20 @@ class TestDatabaseOperations:
         """)
         
         # Get tables
-        tables = self.db_operations.get_tables()
+        tables = self.db.get_tables()
         
         # Verify results
         self.assertIn('test_table1', tables)
         self.assertIn('test_table2', tables)
         
         # Cleanup
-        self.db_operations.drop_table('test_table1')
-        self.db_operations.drop_table('test_table2')
+        self.db.drop_table('test_table1')
+        self.db.drop_table('test_table2')
 
     def test_get_table_columns(self):
         """Test getting table columns."""
         # Create test table
-        self.db_operations.execute_query("""
+        self.db.execute_query("""
             CREATE TABLE test_table (
                 id LONG PRIMARY KEY,
                 name VARCHAR(255),
@@ -1388,101 +1785,101 @@ class TestDatabaseOperations:
         """)
         
         # Get columns
-        columns = self.db_operations.get_table_columns('test_table')
+        columns = self.db.get_table_columns('test_table')
         
         # Verify results
         self.assertEqual(['id', 'name', 'value'], columns)
         
         # Cleanup
-        self.db_operations.drop_table('test_table')
+        self.db.drop_table('test_table')
 
     def test_table_exists(self):
         """Test table existence check."""
         # Create test table
-        self.db_operations.execute_query("""
+        self.db.execute_query("""
             CREATE TABLE test_table (
                 id LONG PRIMARY KEY
             )
         """)
         
         # Check existence
-        self.assertTrue(self.db_operations.table_exists('test_table'))
-        self.assertFalse(self.db_operations.table_exists('nonexistent_table'))
+        self.assertTrue(self.db.table_exists('test_table'))
+        self.assertFalse(self.db.table_exists('nonexistent_table'))
         
         # Cleanup
-        self.db_operations.drop_table('test_table')
+        self.db.drop_table('test_table')
 
     def test_drop_table(self):
         """Test dropping a table."""
         # Create test table
-        self.db_operations.execute_query("""
+        self.db.execute_query("""
             CREATE TABLE test_table (
                 id LONG PRIMARY KEY
             )
         """)
         
         # Verify table exists
-        self.assertTrue(self.db_operations.table_exists('test_table'))
+        self.assertTrue(self.db.table_exists('test_table'))
         
         # Drop table
-        self.db_operations.drop_table('test_table')
+        self.db.drop_table('test_table')
         
         # Verify table no longer exists
-        self.assertFalse(self.db_operations.table_exists('test_table'))
+        self.assertFalse(self.db.table_exists('test_table'))
         
         # Test dropping non-existent table
         with self.assertRaises(DatabaseError):
-            self.db_operations.drop_table('nonexistent_table')
+            self.db.drop_table('nonexistent_table')
 
     def test_truncate_table(self):
         """Test truncating a table."""
         # Create and populate test table
-        self.db_operations.execute_query("""
+        self.db.execute_query("""
             CREATE TABLE test_table (
                 id LONG PRIMARY KEY,
                 value DOUBLE
             )
         """)
-        self.db_operations.execute_query(
+        self.db.execute_query(
             "INSERT INTO test_table (id, value) VALUES (?, ?)",
             (1, 10.0)
         )
         
         # Verify record exists
-        count_before = self.db_operations.execute_query(
+        count_before = self.db.execute_query(
             "SELECT COUNT(*) as count FROM test_table"
         )[0]['count']
         self.assertEqual(1, count_before)
         
         # Truncate table
-        self.db_operations.truncate_table('test_table')
+        self.db.truncate_table('test_table')
         
         # Verify table is empty
-        count_after = self.db_operations.execute_query(
+        count_after = self.db.execute_query(
             "SELECT COUNT(*) as count FROM test_table"
         )[0]['count']
         self.assertEqual(0, count_after)
         
         # Cleanup
-        self.db_operations.drop_table('test_table')
+        self.db.drop_table('test_table')
 
     def test_get_table_info(self):
         """Test getting table information."""
         # Create test table
-        self.db_operations.execute_query("""
+        self.db.execute_query("""
             CREATE TABLE test_table (
                 id LONG PRIMARY KEY,
                 name VARCHAR(255),
                 value DOUBLE
             )
         """)
-        self.db_operations.execute_query(
+        self.db.execute_query(
             "INSERT INTO test_table (id, name, value) VALUES (?, ?, ?)",
             (1, 'test', 10.0)
         )
         
         # Get table info
-        info = self.db_operations.get_table_info('test_table')
+        info = self.db.get_table_info('test_table')
         
         # Verify results
         self.assertEqual('test_table', info['name'])
@@ -1494,41 +1891,41 @@ class TestDatabaseOperations:
         self.assertEqual(['id', 'name', 'value'], column_names)
         
         # Cleanup
-        self.db_operations.drop_table('test_table')
+        self.db.drop_table('test_table')
 
     def test_verify_record_exists(self):
         """Test record existence verification."""
         # Create and populate test table
-        self.db_operations.execute_query("""
+        self.db.execute_query("""
             CREATE TABLE test_table (
                 id LONG PRIMARY KEY,
                 name VARCHAR(255)
             )
         """)
-        self.db_operations.execute_query(
+        self.db.execute_query(
             "INSERT INTO test_table (id, name) VALUES (?, ?)",
             (1, 'test')
         )
         
         # Test existing record
-        self.assertTrue(self.db_operations.verify_record_exists(
+        self.assertTrue(self.db.verify_record_exists(
             'test_table',
             {'id': 1, 'name': 'test'}
         ))
         
         # Test non-existing record
-        self.assertFalse(self.db_operations.verify_record_exists(
+        self.assertFalse(self.db.verify_record_exists(
             'test_table',
             {'id': 2, 'name': 'nonexistent'}
         ))
         
         # Cleanup
-        self.db_operations.drop_table('test_table')
+        self.db.drop_table('test_table')
 
     def test_transaction_management(self):
         """Test transaction management."""
         # Create test table
-        self.db_operations.execute_query("""
+        self.db.execute_query("""
             CREATE TABLE test_table (
                 id LONG PRIMARY KEY,
                 value DOUBLE
@@ -1536,39 +1933,39 @@ class TestDatabaseOperations:
         """)
         
         # Test successful transaction
-        self.db_operations.begin_transaction()
-        self.db_operations.execute_query(
+        self.db.begin_transaction()
+        self.db.execute_query(
             "INSERT INTO test_table (id, value) VALUES (?, ?)",
             (1, 10.0)
         )
-        self.db_operations.commit_transaction()
+        self.db.commit()
         
         # Verify record was committed
-        count = self.db_operations.execute_query(
+        count = self.db.execute_query(
             "SELECT COUNT(*) as count FROM test_table"
         )[0]['count']
         self.assertEqual(1, count)
         
         # Test transaction rollback
-        self.db_operations.begin_transaction()
-        self.db_operations.execute_query(
+        self.db.begin_transaction()
+        self.db.execute_query(
             "INSERT INTO test_table (id, value) VALUES (?, ?)",
             (2, 20.0)
         )
-        self.db_operations.rollback_transaction()
+        self.db.rollback()
         
         # Verify record was not committed
-        count = self.db_operations.execute_query(
+        count = self.db.execute_query(
             "SELECT COUNT(*) as count FROM test_table"
         )[0]['count']
         self.assertEqual(1, count)
         
         # Cleanup
-        self.db_operations.drop_table('test_table')
+        self.db.drop_table('test_table')
 
     def test_context_manager(self):
         """Test context manager functionality."""
-        with self.db_operations as db:
+        with self.db as db:
             # Create test table
             db.execute_query("""
                 CREATE TABLE test_table (
@@ -1583,5 +1980,5 @@ class TestDatabaseOperations:
             db.drop_table('test_table')
         
         # Verify connection is closed
-        self.assertIsNone(self.db_operations.conn)
-        self.assertIsNone(self.db_operations.cursor) 
+        self.assertIsNone(self.db.conn)
+        self.assertIsNone(self.db.cursor) 

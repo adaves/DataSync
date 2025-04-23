@@ -2,6 +2,12 @@
 
 A Python-based data synchronization tool for Microsoft Access databases with robust validation and monitoring capabilities.
 
+## Prerequisites
+
+- Python 3.8 or higher
+- Microsoft Access Database Engine (for Windows)
+- pip (Python package installer)
+
 ## Overview
 
 DataSync provides a comprehensive solution for managing and synchronizing data in Microsoft Access databases. It includes:
@@ -38,143 +44,120 @@ DataSync provides a comprehensive solution for managing and synchronizing data i
 
 ## Installation
 
+### Option 1: Global Installation (Recommended for Production Use)
+
 1. Clone the repository:
 ```bash
 git clone https://github.com/yourusername/DataSync.git
 cd DataSync
 ```
 
-2. Create a virtual environment:
+2. Install globally:
 ```bash
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+pip install -e .
 ```
 
-3. Install dependencies:
+This will make the `datasync` command available system-wide, and you can run it from anywhere without activating a virtual environment.
+
+### Option 2: Development Installation (For Contributors)
+
+1. Clone the repository:
 ```bash
-pip install -r requirements.txt
+git clone https://github.com/yourusername/DataSync.git
+cd DataSync
 ```
+
+2. Create and activate a virtual environment:
+```bash
+# Windows
+python -m venv venv
+venv\Scripts\activate
+
+# Linux/MacOS
+python -m venv venv
+source venv/bin/activate
+```
+
+3. Install the package in development mode:
+```bash
+pip install -e .
+```
+
+4. Install development dependencies:
+```bash
+pip install -e ".[dev]"
+```
+
+## Running the Application
+
+### Basic Usage
+
+Run the application using the command-line interface:
+```bash
+datasync [options]
+```
+
+### Development Commands
+
+1. Run tests:
+```bash
+pytest
+```
+
+2. Run tests with coverage:
+```bash
+pytest --cov=src/datasync --cov-report=term-missing
+```
+
+3. Generate HTML coverage report:
+```bash
+pytest --cov=src/datasync --cov-report=html
+```
+
+4. Run type checking:
+```bash
+mypy src
+```
+
+5. Run linting:
+```bash
+ruff check src
+```
+
+6. Format code:
+```bash
+black src
+isort src
+```
+
+### Configuration
+
+1. Create a `.env` file in the root directory with your database configuration:
+```
+DB_DRIVER={Microsoft Access Driver (*.mdb, *.accdb)}
+DB_PATH=path/to/your/database.accdb
+```
+
+2. Update the configuration in `config/` directory as needed.
 
 ## Project Structure
 
 ```
 DataSync/
 ├── src/
-│   ├── database/
-│   │   ├── operations.py    # Core database operations
-│   │   ├── validation.py    # Data validation
-│   │   └── monitoring.py    # Performance monitoring
-│   ├── processing/          # Data processing modules
-│   ├── utils/              # Utility functions
-│   └── tests/              # Test suite
-├── docs/                   # Documentation
-├── config/                 # Configuration files
-├── logs/                   # Log files
-└── requirements/           # Dependency management
+│   └── datasync/
+│       ├── cli.py
+│       ├── database/
+│       ├── processing/
+│       └── utils/
+├── tests/
+├── config/
+├── docs/
+└── logs/
 ```
 
 ## Usage
 
 ### Basic Database Operations
 
-```python
-from src.database.operations import DatabaseOperations
-
-# Initialize database connection
-db = DatabaseOperations("path/to/database.accdb")
-db.connect()
-
-try:
-    # Perform operations
-    tables = db.get_tables()
-    data = db.read_table("TableName")
-    
-    # Execute custom query
-    results = db.execute_query("SELECT * FROM TableName WHERE condition")
-finally:
-    db.close()
 ```
-
-### Data Validation
-
-```python
-from src.database.validation import DatabaseValidation
-
-validator = DatabaseValidation()
-
-# Define validation rules
-validation_rules = {
-    'data_types': {
-        'name': str,
-        'age': int,
-        'date': datetime
-    },
-    'required_fields': ['name', 'age'],
-    'string_lengths': {'name': 50},
-    'date_ranges': {'date': (min_date, max_date)}
-}
-
-# Validate data
-errors = validator.validate_all(data, validation_rules)
-```
-
-### Performance Monitoring
-
-```python
-from src.database.monitoring import DatabaseMonitor
-
-monitor = DatabaseMonitor()
-
-# Track an operation
-metrics = monitor.start_operation("SELECT", "SELECT * FROM TableName")
-try:
-    # Perform operation
-    result = db.execute_query(metrics.query)
-    monitor.end_operation(metrics, success=True, affected_rows=len(result))
-except Exception as e:
-    monitor.end_operation(metrics, success=False, error_message=str(e))
-
-# Get performance report
-report = monitor.get_performance_report()
-```
-
-## Development
-
-### Running Tests
-
-```bash
-python -m pytest src/tests
-```
-
-### Code Style
-
-This project follows PEP 8 style guidelines. Use the following tools to maintain code quality:
-
-```bash
-# Install development dependencies
-pip install -r requirements/dev.txt
-
-# Run linting
-flake8 src/
-
-# Run type checking
-mypy src/
-```
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a Pull Request
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Acknowledgments
-
-- Microsoft Access Database Engine
-- Python community
-- Open source contributors 

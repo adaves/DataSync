@@ -1,296 +1,244 @@
 """
-Error handling framework for the DataSync application.
-This module provides base error classes and utilities for consistent error handling.
+Error handling utilities for the DataSync package.
 """
 
-from typing import Optional, Dict, Any, Type, Callable
 import logging
-from pathlib import Path
-import functools
-import traceback
-from datetime import datetime
+import time
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, Optional, Tuple, Type, Union
+from functools import wraps
+
+logger = logging.getLogger(__name__)
 
 class DataSyncError(Exception):
-    """Base exception class for all DataSync errors."""
-    
-    def __init__(self, message: str, details: Optional[Dict[str, Any]] = None):
-        """
-        Initialize the error with a message and optional details.
-        
-        Args:
-            message: Human-readable error message
-            details: Optional dictionary of additional error details
-        """
-        super().__init__(message)
-        self.message = message
-        self.details = details or {}
-        self.timestamp = datetime.now()
-        self.traceback = traceback.format_exc()
-        self.logger = logging.getLogger(__name__)
+    """Base exception class for DataSync application errors."""
+    pass
+
+class ConfigurationError(DataSyncError):
+    """Exception raised for configuration-related errors."""
+    pass
 
 class DatabaseError(DataSyncError):
-    """Base exception for database-related errors."""
-    
-    def __init__(self, message: str, details: Optional[Dict[str, Any]] = None, 
-                 query: Optional[str] = None, params: Optional[Dict[str, Any]] = None):
-        """
-        Initialize database error with query information.
-        
-        Args:
-            message: Error message
-            details: Additional error details
-            query: SQL query that caused the error
-            params: Query parameters
-        """
-        super().__init__(message, details)
-        self.query = query
-        self.params = params
-
-class ConnectionError(DatabaseError):
-    """Database connection-related errors."""
-    pass
-
-class TransactionError(DatabaseError):
-    """Transaction-related errors."""
-    pass
-
-class QueryError(DatabaseError):
-    """Query execution errors."""
+    """Exception raised for database-related errors."""
     pass
 
 class ValidationError(DataSyncError):
-    """Base exception for validation-related errors."""
-    
-    def __init__(self, message: str, field: Optional[str] = None, 
-                 value: Optional[Any] = None, details: Optional[Dict[str, Any]] = None):
-        """
-        Initialize validation error.
-        
-        Args:
-            message: Error message
-            field: Name of the field that failed validation
-            value: Invalid value
-            details: Additional error details
-        """
-        super().__init__(message, details)
-        self.field = field
-        self.value = value
-
-class ConfigurationError(DataSyncError):
-    """Base exception for configuration-related errors."""
+    """Exception raised for validation-related errors."""
     pass
 
 class FileError(DataSyncError):
-    """Base exception for file-related errors."""
+    """Exception raised for file-related errors."""
+    pass
+
+class ProcessingError(DataSyncError):
+    """Exception raised for data processing errors."""
+    pass
+
+class SyncError(DataSyncError):
+    """Exception raised for synchronization errors."""
+    pass
+
+class MonitorError(DataSyncError):
+    """Exception raised for monitoring errors."""
+    pass
+
+@dataclass
+class ErrorContext:
+    """Context information for error handling."""
     
-    def __init__(self, message: str, file_path: Optional[Path] = None, 
-                 details: Optional[Dict[str, Any]] = None):
-        """
-        Initialize file error.
-        
-        Args:
-            message: Error message
-            file_path: Path to the file that caused the error
-            details: Additional error details
-        """
-        super().__init__(message, details)
-        self.file_path = file_path
+    operation: str
+    details: Dict[str, Any] = None
+    timestamp: str = None
+    
+    def __post_init__(self):
+        """Initialize default values."""
+        if self.details is None:
+            self.details = {}
+        if self.timestamp is None:
+            self.timestamp = time.strftime("%Y-%m-%dT%H:%M:%S")
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert context to dictionary."""
+        return {
+            "operation": self.operation,
+            "details": self.details,
+            "timestamp": self.timestamp
+        }
+
+@dataclass
+class RetryConfig:
+    """Configuration for retry operations."""
+    
+    max_attempts: int = 3
+    delay: float = 1.0
+    backoff_factor: float = 2.0
+    exceptions: Tuple[Type[Exception], ...] = (Exception,)
 
 class ErrorHandler:
-    """Utility class for handling and logging errors."""
+    """Handler for managing and processing errors."""
     
-    def __init__(self, log_file: Optional[Path] = None, 
-                 error_map: Optional[Dict[Type[Exception], Type[DataSyncError]]] = None):
-        """
-        Initialize the error handler.
+    def __init__(self):
+        """Initialize error handler."""
+        self._handlers: Dict[Type[Exception], Callable] = {}
+    
+    def register_handler(self, exception_type: Type[Exception], handler: Callable):
+        """Register a custom handler for an exception type."""
+        self._handlers[exception_type] = handler
+    
+    def handle_error(self, error: Exception, context: ErrorContext) -> Dict[str, Any]:
+        """Handle an error with the given context."""
+        # Try to find a specific handler for the error type
+        for exception_type, handler in self._handlers.items():
+            if isinstance(error, exception_type):
+                return handler(error, context)
         
-        Args:
-            log_file: Optional path to the log file
-            error_map: Optional mapping of external exceptions to DataSync exceptions
-        """
-        self.logger = logging.getLogger(__name__)
-        self.error_map = error_map or {}
-        if log_file:
-            self._setup_file_logging(log_file)
+        # Default handling
+        return {
+            "error": str(error),
+            "context": context.to_dict(),
+            "type": error.__class__.__name__
+        }
+
+def retry_on_error(
+    func: Optional[Callable] = None,
+    *,
+    max_attempts: int = 3,
+    delay: float = 1.0,
+    backoff_factor: float = 2.0,
+    exceptions: Tuple[Type[Exception], ...] = (Exception,)
+) -> Callable:
+    """
+    Decorator for retrying operations on error.
     
-    def _setup_file_logging(self, log_file: Path) -> None:
-        """Setup file logging for errors."""
-        log_file.parent.mkdir(parents=True, exist_ok=True)
-        file_handler = logging.FileHandler(log_file)
-        file_handler.setFormatter(
-            logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
+    Args:
+        func: The function to decorate
+        max_attempts: Maximum number of retry attempts
+        delay: Initial delay between retries in seconds
+        backoff_factor: Factor to multiply delay by after each retry
+        exceptions: Tuple of exception types to catch and retry
+    
+    Returns:
+        Decorated function
+    """
+    if func is None:
+        return lambda f: retry_on_error(
+            f,
+            max_attempts=max_attempts,
+            delay=delay,
+            backoff_factor=backoff_factor,
+            exceptions=exceptions
         )
-        self.logger.addHandler(file_handler)
     
-    def handle_error(self, error: Exception, context: Optional[Dict[str, Any]] = None) -> None:
-        """
-        Handle and log an error with context.
-        
-        Args:
-            error: The exception to handle
-            context: Optional dictionary of context information
-        """
-        context = context or {}
-        
-        if isinstance(error, DataSyncError):
-            # Log DataSync errors with their details
-            self.logger.error(
-                f"{error.__class__.__name__}: {error.message}",
-                extra={
-                    'details': error.details,
-                    'context': context,
-                    'timestamp': error.timestamp,
-                    'traceback': error.traceback
-                }
-            )
-        else:
-            # Map external exceptions to DataSync exceptions if possible
-            mapped_error = self._map_error(error)
-            if mapped_error:
-                self.handle_error(mapped_error, context)
-            else:
-                # Log other exceptions
-                self.logger.error(
-                    f"Unexpected error: {str(error)}",
-                    extra={'context': context},
-                    exc_info=True
-                )
-    
-    def _map_error(self, error: Exception) -> Optional[DataSyncError]:
-        """Map external exceptions to DataSync exceptions."""
-        for error_type, datasync_error in self.error_map.items():
-            if isinstance(error, error_type):
-                return datasync_error(str(error))
-        return None
-    
-    def log_warning(self, message: str, context: Optional[Dict[str, Any]] = None) -> None:
-        """
-        Log a warning message with context.
-        
-        Args:
-            message: Warning message
-            context: Optional dictionary of context information
-        """
-        self.logger.warning(message, extra={'context': context or {}})
-    
-    def log_info(self, message: str, context: Optional[Dict[str, Any]] = None) -> None:
-        """
-        Log an info message with context.
-        
-        Args:
-            message: Info message
-            context: Optional dictionary of context information
-        """
-        self.logger.info(message, extra={'context': context or {}})
-
-def handle_database_error(func: Callable) -> Callable:
-    """
-    Decorator for handling database operation errors.
-    
-    Args:
-        func: Function to wrap
-        
-    Returns:
-        Wrapped function with error handling
-    """
-    @functools.wraps(func)
+    @wraps(func)
     def wrapper(*args, **kwargs):
-        try:
-            return func(*args, **kwargs)
-        except Exception as e:
-            # Get context information
-            context = {
-                'function': func.__name__,
-                'args': args,
-                'kwargs': kwargs
-            }
-            
-            # Create appropriate error type
-            if 'connection' in str(e).lower():
-                error = ConnectionError(str(e), context)
-            elif 'transaction' in str(e).lower():
-                error = TransactionError(str(e), context)
-            elif 'query' in str(e).lower() or 'sql' in str(e).lower():
-                error = QueryError(str(e), context)
-            else:
-                error = DatabaseError(str(e), context)
-            
-            # Log the error
-            error.logger.error(
-                f"Database operation failed: {error.message}",
-                extra={
-                    'details': error.details,
-                    'timestamp': error.timestamp,
-                    'traceback': error.traceback
-                }
-            )
-            
-            raise error
+        last_exception = None
+        current_delay = delay
+        
+        for attempt in range(max_attempts):
+            try:
+                return func(*args, **kwargs)
+            except exceptions as e:
+                last_exception = e
+                if attempt < max_attempts - 1:
+                    time.sleep(current_delay)
+                    current_delay *= backoff_factor
+        
+        raise last_exception
     
     return wrapper
 
-def handle_validation_error(func: Callable) -> Callable:
+def handle_error(func: Optional[Callable] = None, *, operation: Optional[str] = None) -> Union[Dict[str, Any], Callable]:
     """
-    Decorator for handling validation errors.
+    Handle an error with context. Can be used as a function or decorator.
+    
+    When used as a function:
+        result = handle_error(error, context)
+    
+    When used as a decorator:
+        @handle_error(operation="operation_name")
+        def some_function():
+            ...
     
     Args:
-        func: Function to wrap
-        
+        func: The function to decorate or the error to handle
+        operation: Optional operation name for the decorator
+    
     Returns:
-        Wrapped function with error handling
+        When used as a function: Dictionary with error information
+        When used as a decorator: Decorated function
     """
-    @functools.wraps(func)
+    if func is None:
+        # Being used as a decorator with parameters
+        def decorator(f):
+            @wraps(f)
+            def wrapper(*args, **kwargs):
+                try:
+                    return f(*args, **kwargs)
+                except Exception as e:
+                    context = ErrorContext(
+                        operation=operation or f.__name__,
+                        details={
+                            'args': args,
+                            'kwargs': kwargs,
+                            'function': f.__name__
+                        }
+                    )
+                    handler = ErrorHandler()
+                    result = handler.handle_error(e, context)
+                    log_error(e, context)
+                    raise type(e)(str(e)).with_traceback(e.__traceback__)
+            return wrapper
+        return decorator
+    
+    if isinstance(func, Exception):
+        # Being used as a function
+        context = ErrorContext(operation=operation or "unknown_operation")
+        handler = ErrorHandler()
+        return handler.handle_error(func, context)
+    
+    # Being used as a decorator without parameters
+    @wraps(func)
     def wrapper(*args, **kwargs):
         try:
             return func(*args, **kwargs)
         except Exception as e:
-            context = {
-                'function': func.__name__,
-                'args': args,
-                'kwargs': kwargs
-            }
-            error = ValidationError(str(e), details=context)
-            error.logger.error(
-                f"Validation failed: {error.message}",
-                extra={
-                    'details': error.details,
-                    'timestamp': error.timestamp,
-                    'traceback': error.traceback
+            context = ErrorContext(
+                operation=func.__name__,
+                details={
+                    'args': args,
+                    'kwargs': kwargs,
+                    'function': func.__name__
                 }
             )
-            raise error
-    
+            handler = ErrorHandler()
+            result = handler.handle_error(e, context)
+            log_error(e, context)
+            raise type(e)(str(e)).with_traceback(e.__traceback__)
     return wrapper
 
-def handle_file_error(func: Callable) -> Callable:
+def format_error_message(error: Exception, context: ErrorContext) -> str:
     """
-    Decorator for handling file operation errors.
+    Format an error message with context.
     
     Args:
-        func: Function to wrap
-        
-    Returns:
-        Wrapped function with error handling
-    """
-    @functools.wraps(func)
-    def wrapper(*args, **kwargs):
-        try:
-            return func(*args, **kwargs)
-        except Exception as e:
-            context = {
-                'function': func.__name__,
-                'args': args,
-                'kwargs': kwargs
-            }
-            error = FileError(str(e), details=context)
-            error.logger.error(
-                f"File operation failed: {error.message}",
-                extra={
-                    'details': error.details,
-                    'timestamp': error.timestamp,
-                    'traceback': error.traceback
-                }
-            )
-            raise error
+        error: The exception
+        context: Error context information
     
-    return wrapper 
+    Returns:
+        Formatted error message
+    """
+    return (
+        f"Error in {context.operation}: {str(error)}\n"
+        f"Context: {context.to_dict()}"
+    )
+
+def log_error(error: Exception, context: ErrorContext):
+    """
+    Log an error with context.
+    
+    Args:
+        error: The exception to log
+        context: Error context information
+    """
+    message = format_error_message(error, context)
+    logger.error(message) 

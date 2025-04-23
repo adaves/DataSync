@@ -27,21 +27,22 @@ def create_mock_database(db_path: str, template_path: Optional[str] = None) -> N
         shutil.copy2(template_path, db_path)
         return
     
-    # Create an empty Access database
+    # Create a new Access database using DAO
+    import win32com.client
+    
+    # Create the database using ADOX
+    cat = win32com.client.Dispatch("ADOX.Catalog")
+    conn_str = f"Provider=Microsoft.ACE.OLEDB.12.0;Data Source={db_path};"
+    cat.Create(conn_str)
+    cat = None  # Release the COM object
+    
+    # Now connect and create basic structure
     conn_str = (
         "DRIVER={Microsoft Access Driver (*.mdb, *.accdb)};"
         f"DBQ={db_path};"
         "ExtendedAnsiSQL=1;"
-        "UID=Admin;"
-        "PWD=;"
     )
     
-    # Create empty database file
-    with open(db_path, 'wb') as f:
-        # Write empty Access database file header
-        f.write(b'\x00' * 4096)
-    
-    # Connect and create basic structure
     conn = pyodbc.connect(conn_str)
     try:
         cursor = conn.cursor()
@@ -49,7 +50,7 @@ def create_mock_database(db_path: str, template_path: Optional[str] = None) -> N
         # Create test tables
         cursor.execute("""
             CREATE TABLE test_table (
-                id INTEGER PRIMARY KEY,
+                id COUNTER PRIMARY KEY,
                 name TEXT(50),
                 value DOUBLE,
                 created_at DATETIME

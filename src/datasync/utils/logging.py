@@ -27,7 +27,8 @@ def setup_logging(config_path: Path = None) -> int:
         # Default configuration
         logging.basicConfig(
             level=logging.INFO,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            force=True  # Reset any existing handlers
         )
         return 10  # Default number of loggers
 
@@ -44,6 +45,19 @@ def get_logger(name: str, propagate: bool = False) -> logging.Logger:
     """
     logger = logging.getLogger(name)
     logger.propagate = propagate
+    
+    # Set default level if not already set
+    if not logger.level:
+        logger.setLevel(logging.INFO)
+        
+    # Add a default handler if none exists
+    if not logger.handlers:
+        handler = logging.StreamHandler()
+        handler.setFormatter(logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        ))
+        logger.addHandler(handler)
+    
     return logger
 
 def validate_logger_format(format_str: str) -> None:
@@ -56,8 +70,17 @@ def validate_logger_format(format_str: str) -> None:
     Raises:
         ValueError if format string is invalid
     """
+    if not format_str:
+        raise ValueError("Format string cannot be empty")
+        
     try:
-        logging.Formatter(format_str)
+        # Try to create a formatter with the format string
+        formatter = logging.Formatter(format_str)
+        # Try to format a test message to catch any invalid placeholders
+        formatter.format(logging.LogRecord(
+            'test', logging.INFO, 'test.py', 1,
+            'test message', (), None
+        ))
     except Exception as e:
         raise ValueError(f"Invalid logging format string: {str(e)}")
 
@@ -73,7 +96,10 @@ def configure_logging(config_path: Path = None) -> None:
     """
     if config_path and config_path.exists():
         with open(config_path) as f:
-            config = yaml.safe_load(f)
+            try:
+                config = yaml.safe_load(f)
+            except yaml.YAMLError as e:
+                raise ValueError(f"Invalid YAML configuration: {str(e)}")
             
         # Validate format strings
         if 'formatters' in config:
@@ -81,10 +107,14 @@ def configure_logging(config_path: Path = None) -> None:
                 if 'format' in formatter:
                     validate_logger_format(formatter['format'])
         
-        logging.config.dictConfig(config)
+        try:
+            logging.config.dictConfig(config)
+        except Exception as e:
+            raise ValueError(f"Invalid logging configuration: {str(e)}")
     else:
         # Default configuration
         logging.basicConfig(
             level=logging.INFO,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            force=True  # Reset any existing handlers
         ) 

@@ -121,18 +121,24 @@ class ExcelValidator:
     
     def validate_data_types(self,
                           df: pd.DataFrame,
-                          column_types: Dict[str, str]) -> ValidationResult:
+                          column_types: Dict[str, str],
+                          nullable_columns: Optional[List[str]] = None,
+                          custom_messages: Optional[Dict[str, str]] = None) -> ValidationResult:
         """
         Validate data types of DataFrame columns.
         
         Args:
             df: DataFrame to validate
             column_types: Dictionary mapping column names to expected types
+            nullable_columns: List of columns that can contain null values
+            custom_messages: Dictionary mapping column names to custom error messages
             
         Returns:
             ValidationResult containing any errors found
         """
         result = ValidationResult()
+        nullable_columns = nullable_columns or []
+        custom_messages = custom_messages or {}
         
         for column, expected_type in column_types.items():
             if column not in df.columns:
@@ -159,15 +165,27 @@ class ExcelValidator:
             # Validate each value in the column
             for idx, value in enumerate(df[column], start=1):
                 if pd.isna(value):
-                    continue  # Skip NA values
-                
-                try:
-                    if not validator(value):
+                    if column not in nullable_columns:
                         result.add_error(ValidationError(
                             column=column,
                             row_index=idx,
                             value=value,
-                            message=f"Invalid {expected_type} value: {value}",
+                            message=f"Null value not allowed in non-nullable column",
+                            error_type="NullError"
+                        ))
+                    continue
+                
+                try:
+                    if not validator(value):
+                        error_msg = custom_messages.get(
+                            column,
+                            f"Invalid {expected_type} value: {value}"
+                        )
+                        result.add_error(ValidationError(
+                            column=column,
+                            row_index=idx,
+                            value=value,
+                            message=error_msg,
                             error_type="TypeError"
                         ))
                 except Exception as e:
@@ -257,7 +275,11 @@ class ExcelValidator:
         if isinstance(value, (int, np.integer)):
             return True
         if isinstance(value, str):
-            return value.strip().isdigit()
+            try:
+                int(value)
+                return True
+            except ValueError:
+                return False
         return False
     
     def _validate_float(self, value: Any) -> bool:
@@ -266,7 +288,7 @@ class ExcelValidator:
             return True
         if isinstance(value, str):
             try:
-                float(value.strip())
+                float(value)
                 return True
             except ValueError:
                 return False
@@ -274,7 +296,7 @@ class ExcelValidator:
     
     def _validate_str(self, value: Any) -> bool:
         """Validate string values."""
-        return isinstance(value, str)
+        return isinstance(value, str) or (isinstance(value, (int, float)) and not isinstance(value, bool))
     
     def _validate_date(self, value: Any) -> bool:
         """Validate date values."""
@@ -290,11 +312,10 @@ class ExcelValidator:
     
     def _validate_bool(self, value: Any) -> bool:
         """Validate boolean values."""
-        if isinstance(value, (bool, np.bool_)):
+        if isinstance(value, bool):
             return True
-        if isinstance(value, str):
-            value = value.lower().strip()
-            return value in ('true', 'false', '1', '0', 'yes', 'no')
         if isinstance(value, (int, float)):
             return value in (0, 1)
+        if isinstance(value, str):
+            return value.lower() in ('true', 'false', 'yes', 'no', '1', '0', 't', 'f', 'y', 'n')
         return False 
