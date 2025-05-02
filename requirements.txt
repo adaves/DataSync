@@ -1,16 +1,4 @@
-pandas>=2.0.0
-numpy>=1.24.0
-pyodbc>=4.0.0
-openpyxl>=3.1.0
-python-dotenv>=1.0.0
-pyyaml>=6.0.0
-pytest>=7.0.0
-pytest-cov>=4.0.0
-pytest-mock>=3.10.0
-pytest-xdist>=3.0.0
-coverage>=7.0.0
-mypy>=1.0.0
-ruff>=0.0.0
-black>=23.0.0
-isort>=5.0.0
-pyinstaller>=6.0.0 
+pyodbc==5.0.1
+pytest==8.0.0
+pandas==2.2.0  # Will be needed for Excel operations later
+pywin32==306  # For Access database creation in tests
