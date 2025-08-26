@@ -1,0 +1,137 @@
+# DataSync Configuration Settings
+
+# Database Configuration
+database:
+  # Default database driver
+  driver: "Microsoft Access Driver (*.mdb, *.accdb)"
+  
+  # Connection settings
+  connection:
+    timeout: 30  # seconds
+    retry_attempts: 3
+    retry_delay: 5  # seconds
+  
+  # Default paths
+  paths:
+    source: "data/source.accdb"
+    destination: "data/destination.accdb"
+    backup: "data/backups"
+
+# Synchronization Settings
+sync:
+  # Batch processing
+  batch:
+    size: 1000  # records per batch
+    timeout: 300  # seconds per batch
+  
+  # Validation during sync
+  validation:
+    enabled: true
+    check_null_values: true
+    check_data_types: true
+    check_required_fields: true
+  
+  # Error handling
+  error_handling:
+    max_retries: 3
+    retry_delay: 5  # seconds
+    continue_on_error: false
+
+# Validation Settings
+validation:
+  # Data validation rules
+  rules:
+    # Field validation
+    fields:
+      required: true
+      max_length: 255
+      min_length: 1
+    
+    # Data type validation
+    types:
+      integer:
+        min: -2147483648
+        max: 2147483647
+      decimal:
+        precision: 18
+        scale: 2
+      date:
+        format: "%Y-%m-%d"
+      datetime:
+        format: "%Y-%m-%d %H:%M:%S"
+    
+    # Value validation
+    values:
+      allow_null: false
+      allow_empty: false
+      allow_whitespace: false
+
+# Monitoring Settings
+monitor:
+  # Default monitoring interval in seconds
+  interval: 60
+  
+  # Monitoring duration in seconds (0 for unlimited)
+  duration: 3600
+  
+  # Metrics to monitor
+  metrics:
+    - record_count
+    - table_size
+    - last_updated
+    - error_count
+  
+  # Alert thresholds
+  alerts:
+    error_threshold: 10
+    size_threshold: 1073741824  # 1GB in bytes
+    update_threshold: 86400  # 24 hours in seconds
+
+# Logging Configuration
+logging:
+  # Log levels: DEBUG, INFO, WARNING, ERROR, CRITICAL
+  level: "INFO"
+  
+  # Log file settings
+  file:
+    enabled: true
+    path: "logs/datasync.log"
+    max_size: 10485760  # 10MB
+    backup_count: 5
+  
+  # Console logging
+  console:
+    enabled: true
+    format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+  
+  # Email alerts (optional)
+  email:
+    enabled: false
+    smtp_server: "smtp.example.com"
+    smtp_port: 587
+    sender: "datasync@example.com"
+    recipients:
+      - "admin@example.com"
+    subject_prefix: "[DataSync]"
+
+# Excel Export Settings
+excel:
+  # Default Excel format
+  format: "xlsx"  # xlsx or xls
+  
+  # Sheet settings
+  sheet:
+    max_rows: 1048576  # Maximum rows per sheet
+    max_columns: 16384  # Maximum columns per sheet
+  
+  # Data formatting
+  formatting:
+    date_format: "YYYY-MM-DD"
+    datetime_format: "YYYY-MM-DD HH:MM:SS"
+    number_format: "#,##0.00"
+  
+  # Performance settings
+  performance:
+    use_openpyxl: true
+    optimize_memory: true
+    chunk_size: 10000 

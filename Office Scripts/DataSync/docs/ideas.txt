@@ -1,0 +1,8 @@
+-change the name of the project
+-cli for the user to interact with the database
+-make this a package
+-add tests
+-add documentation
+-add logging
+-add error handling
+-add tests

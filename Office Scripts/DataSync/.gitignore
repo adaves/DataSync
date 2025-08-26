@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.egg-info/
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# PyInstaller
+*.manifest
+*.spec
+build/
+dist/
+installer/
+
+# Excel and Access files
+*.xls
+*.xlsx
+*.accdb
+*.laccdb
+*.mdb
+
+# Log files
+*.log
+logs/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary files
+*.tmp
+*.temp
+temp/
+tmp/
+
+# Test outputs
+test_results_*.log
+
+# Personal notes
+i need this thread summarized for context for a Cu.md
+
+# Documentation that might contain sensitive data
+docs/*.xls
+docs/*.xlsx
+docs/*.accdb
+docs/*.mdb
