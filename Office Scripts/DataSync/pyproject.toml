@@ -16,7 +16,8 @@ omit = [
     "src/datasync/tests/*",
     "src/datasync/utils/__init__.py",
     "src/datasync/database/__init__.py",
-    "src/datasync/processing/__init__.py"
+    "src/datasync/processing/__init__.py",
+    "src/datasync/services/__init__.py"
 ]
 
 [tool.coverage.report]

@@ -5,13 +5,30 @@ DataSync Import/Delete Cycle Test Script
 This script tests the reliability and performance of the DataSync import/delete functionality
 by repeatedly deleting all 2025 records and re-importing them from Excel files.
 
-Usage: python test_import_cycle.py
+Test Modes:
+- Mode A (default): Import all files at once every iteration
+- Mode B: Alternating between "all at once" and "one by one" methods
+- Mode C: Random choice of import method each iteration
+
+Usage: 
+    # Interactive mode (prompts for settings)
+    python test_import_cycle.py                    # Auto-interactive if no args
+    python test_import_cycle.py --interactive      # Force interactive mode
+    
+    # Command line mode (direct execution)
+    python test_import_cycle.py --mode A           # Mode A (all at once)
+    python test_import_cycle.py --mode B           # Mode B (alternating)
+    python test_import_cycle.py --mode C           # Mode C (random)
+    python test_import_cycle.py --iterations 20    # Custom iteration count
+    python test_import_cycle.py --mode B --iterations 50  # Combined options
 """
 
 import sys
 import os
 import time
 import logging
+import random
+import argparse
 from datetime import datetime
 from typing import Dict, List, Tuple
 
@@ -32,12 +49,16 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class ImportCycleTest:
-    def __init__(self, db_path: str, excel_files: List[str], iterations: int = 10):
-        """Initialize the test with database path and Excel files."""
+    def __init__(self, db_path: str, excel_files: List[str], iterations: int = 10, mode: str = "A"):
+        """Initialize the test with database path, Excel files, and test mode."""
         self.db_path = db_path
         self.excel_files = excel_files
         self.iterations = iterations
+        self.mode = mode.upper()
         self.target_table = "tblProjectedDataPTP"
+        
+        # Track import methods used for analysis
+        self.import_methods_used = []
         
         # Test statistics
         self.stats = {
@@ -51,6 +72,23 @@ class ImportCycleTest:
             'errors': [],
             'verification_failures': []
         }
+        
+    def get_import_method(self, iteration: int) -> str:
+        """Get import method based on test mode and iteration."""
+        if self.mode == "A":
+            # Mode A: Always all at once
+            method = "all_at_once"
+        elif self.mode == "B":
+            # Mode B: Alternating - odd iterations = all_at_once, even = one_by_one
+            method = "all_at_once" if iteration % 2 == 1 else "one_by_one"
+        elif self.mode == "C":
+            # Mode C: Random choice
+            method = random.choice(["all_at_once", "one_by_one"])
+        else:
+            method = "all_at_once"  # Default fallback
+        
+        self.import_methods_used.append(method)
+        return method
         
     def connect_database(self) -> DatabaseOperations:
         """Create and connect to database."""
@@ -259,7 +297,8 @@ class ImportCycleTest:
     
     def run_single_iteration(self, iteration: int) -> bool:
         """Run a single delete/import cycle. Returns True if successful."""
-        logger.info(f"\n=== Starting Iteration {iteration}/{self.iterations} ===")
+        import_method = self.get_import_method(iteration)
+        logger.info(f"\n=== Starting Iteration {iteration}/{self.iterations} (Method: {import_method}) ===")
         
         try:
             db_ops = self.connect_database()
@@ -276,9 +315,10 @@ class ImportCycleTest:
             # Step 2: Delete 2025 records
             deleted_count, delete_time = self.delete_2025_records(db_ops)
             
-            # Step 3: Import records
-            print(f"  Importing Excel files...", end="", flush=True)
-            imported_count, import_time = self.import_excel_files(db_ops, "all_at_once")
+            # Step 3: Import records using selected method
+            method_display = f"({import_method})" if self.mode != "A" else ""
+            print(f"  Importing Excel files {method_display}...", end="", flush=True)
+            imported_count, import_time = self.import_excel_files(db_ops, import_method)
             print(f" Done ({import_time:.1f}s)")
             
             # Step 4: Verify import
@@ -300,7 +340,7 @@ class ImportCycleTest:
             if not verification_passed:
                 self.stats['verification_failures'].append(iteration)
             
-            logger.info(f"Iteration {iteration} completed: -{deleted_count:,} +{imported_count:,} records")
+            logger.info(f"Iteration {iteration} completed: -{deleted_count:,} +{imported_count:,} records ({import_method})")
             logger.info(f"Final state: {final_total:,} total records, {final_2025:,} from 2025")
             
             db_ops.close()
@@ -339,69 +379,181 @@ class ImportCycleTest:
         self._print_summary(total_time, successful_iterations)
     
     def _print_summary(self, total_time: float, successful_iterations: int):
-        """Print comprehensive test summary."""
-        print(f"\n=== Test Summary ===")
+        """Print comprehensive test summary with method analysis."""
+        mode_names = {"A": "All at Once", "B": "Alternating", "C": "Random"}
+        mode_name = mode_names.get(self.mode, "Unknown")
         
-        print(f"Database: {os.path.basename(self.db_path)}")
-        print(f"Excel files: {len(self.excel_files)}")
-        print(f"Target table: {self.target_table}")
-        print(f"Iterations: {self.iterations}")
+        print(f"\n{'='*60}")
+        print(f"DATASYNC IMPORT/DELETE CYCLE TEST SUMMARY - MODE {self.mode}")
+        print(f"{'='*60}")
         
-        print(f"\nResults:")
-        print(f"Total time: {total_time:.1f}s ({total_time/60:.1f} min)")
-        print(f"Successful: {successful_iterations}/{self.iterations}")
+        print(f"\nTEST CONFIGURATION:")
+        print(f"  Database: {os.path.basename(self.db_path)}")
+        print(f"  Excel files: {len(self.excel_files)} files")
+        print(f"  Target table: {self.target_table}")
+        print(f"  Test mode: {self.mode} ({mode_name})")
+        print(f"  Planned iterations: {self.iterations}")
+        
+        print(f"\nOVERALL RESULTS:")
+        print(f"  Total test time: {total_time:.2f} seconds ({total_time/60:.1f} minutes)")
+        print(f"  Successful iterations: {successful_iterations}/{self.iterations}")
         print(f"  Success rate: {(successful_iterations/self.iterations)*100:.1f}%")
         print(f"  Failed iterations: {self.iterations - successful_iterations}")
         
+        # Method usage analysis (for modes B and C)
+        if self.mode != "A" and self.import_methods_used:
+            method_counts = {}
+            for method in self.import_methods_used:
+                method_counts[method] = method_counts.get(method, 0) + 1
+            
+            print(f"\nIMPORT METHOD USAGE:")
+            for method, count in method_counts.items():
+                print(f"  {method}: {count} times ({count/len(self.import_methods_used)*100:.1f}%)")
+            
+            # Performance by method
+            if len(self.stats['import_times']) == len(self.import_methods_used):
+                method_performance = {}
+                for i, method in enumerate(self.import_methods_used):
+                    if method not in method_performance:
+                        method_performance[method] = []
+                    method_performance[method].append(self.stats['import_times'][i])
+                
+                print(f"\nPERFORMANCE BY METHOD:")
+                for method, times in method_performance.items():
+                    avg_time = sum(times) / len(times)
+                    print(f"  {method}: {avg_time:.2f}s average ({len(times)} iterations)")
+        
         if self.stats['delete_times']:
-            avg_delete = sum(self.stats['delete_times'])/len(self.stats['delete_times'])
-            avg_import = sum(self.stats['import_times'])/len(self.stats['import_times'])
-            print(f"\nPerformance:")
-            print(f"  Average delete: {avg_delete:.1f}s")
-            print(f"  Average import: {avg_import:.1f}s")
-            print(f"  Records per iteration: {sum(self.stats['records_deleted'])//len(self.stats['delete_times']):,}")
+            print(f"\nDELETE PERFORMANCE:")
+            print(f"  Total delete time: {self.stats['total_delete_time']:.2f}s")
+            print(f"  Average delete time: {sum(self.stats['delete_times'])/len(self.stats['delete_times']):.2f}s")
+            print(f"  Fastest delete: {min(self.stats['delete_times']):.2f}s")
+            print(f"  Slowest delete: {max(self.stats['delete_times']):.2f}s")
+            print(f"  Total records deleted: {sum(self.stats['records_deleted']):,}")
+        
+        if self.stats['import_times']:
+            print(f"\nIMPORT PERFORMANCE:")
+            print(f"  Total import time: {self.stats['total_import_time']:.2f}s")
+            print(f"  Average import time: {sum(self.stats['import_times'])/len(self.stats['import_times']):.2f}s")
+            print(f"  Fastest import: {min(self.stats['import_times']):.2f}s")
+            print(f"  Slowest import: {max(self.stats['import_times']):.2f}s")
+            print(f"  Total records imported: {sum(self.stats['records_imported']):,}")
         
         if self.stats['errors']:
-            print(f"\nErrors: {len(self.stats['errors'])}")
-            for i, error in enumerate(self.stats['errors'][:3], 1):  # Show first 3 errors
-                print(f"  {i}. {error}")
-            if len(self.stats['errors']) > 3:
-                print(f"  ... and {len(self.stats['errors'])-3} more")
+            print(f"\nERRORS ENCOUNTERED ({len(self.stats['errors'])}):")
+            for error in self.stats['errors']:
+                print(f"  - {error}")
         
         if self.stats['verification_failures']:
-            print(f"\nVerification failures: {', '.join(map(str, self.stats['verification_failures']))}")
+            print(f"\nVERIFICATION FAILURES:")
+            print(f"  Failed iterations: {', '.join(map(str, self.stats['verification_failures']))}")
         
-        print(f"\nDetailed logs: test_import_cycle.log")
+        print(f"\n{'='*60}")
+        
+        # Save detailed log with mode-specific filename
+        log_file = f"test_results_mode{self.mode}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+        with open(log_file, 'w') as f:
+            f.write(f"DataSync Test Results Mode {self.mode} - {datetime.now()}\n")
+            f.write(f"Import methods used: {self.import_methods_used}\n")
+            f.write(f"Statistics: {self.stats}\n")
+        print(f"Detailed results saved to: {log_file}")
+        print(f"Debug logs saved to: test_import_cycle.log")
+
+def get_user_input():
+    """Get test configuration from user input."""
+    print("🔧 DataSync Import/Delete Cycle Test Configuration")
+    print("=" * 50)
+    
+    # Get test mode
+    print("\nTest Modes:")
+    print("  A - All at Once (import all files together every iteration)")
+    print("  B - Alternating (alternate between 'all at once' and 'one by one')")
+    print("  C - Random (randomly choose method each iteration)")
+    
+    while True:
+        mode = input("\nSelect test mode (A/B/C) [default: A]: ").strip().upper()
+        if not mode:
+            mode = "A"
+        if mode in ["A", "B", "C"]:
+            break
+        print("❌ Invalid mode. Please enter A, B, or C.")
+    
+    # Get iteration count
+    while True:
+        iterations_input = input(f"\nNumber of iterations [default: 10]: ").strip()
+        if not iterations_input:
+            iterations = 10
+            break
+        try:
+            iterations = int(iterations_input)
+            if iterations <= 0:
+                print("❌ Please enter a positive number.")
+                continue
+            if iterations > 100:
+                confirm = input(f"⚠️  {iterations} iterations may take a long time. Continue? (y/N): ").strip().lower()
+                if confirm not in ['y', 'yes']:
+                    continue
+            break
+        except ValueError:
+            print("❌ Please enter a valid number.")
+    
+    return mode, iterations
 
 def main():
     """Main function to run the test."""
+    parser = argparse.ArgumentParser(description="DataSync Import/Delete Cycle Test")
+    parser.add_argument("--mode", choices=["A", "B", "C"], 
+                       help="Test mode: A=all at once, B=alternating, C=random")
+    parser.add_argument("--iterations", type=int, 
+                       help="Number of test iterations")
+    parser.add_argument("--interactive", action="store_true",
+                       help="Use interactive mode to configure test settings")
+    args = parser.parse_args()
+    
+    # Determine if we should use interactive mode
+    use_interactive = args.interactive or (args.mode is None and args.iterations is None)
+    
+    if use_interactive:
+        # Interactive mode
+        mode, iterations = get_user_input()
+        print(f"\n✅ Configuration: Mode {mode}, {iterations} iterations")
+    else:
+        # Command line mode
+        mode = args.mode or "A"
+        iterations = args.iterations or 10
     
     # Configuration
     DATABASE_PATH = "working db 8.25.2025 prodjectDataPTP.accdb"
     EXCEL_FILES = [
-        "8.18.25 - all other - Projected KPI's COT - TG Fixed Public - Default.xls",
-        "8.18.25 - groc all other - Projected KPI's COT - TG Fixed Public - Default.xls", 
-        "8.18.25 - grocery enlow - Projected KPI's COT - TG Fixed Public - Default.xls"
+        "data/8.18.25 - all other - Projected KPI's COT - TG Fixed Public - Default.xls",
+        "data/8.18.25 - groc all other - Projected KPI's COT - TG Fixed Public - Default.xls", 
+        "data/8.18.25 - grocery enlow - Projected KPI's COT - TG Fixed Public - Default.xls"
     ]
-    ITERATIONS = 10
     
     # Verify files exist
     if not os.path.exists(DATABASE_PATH):
-        print(f"[ERROR] Database file not found: {DATABASE_PATH}")
+        print(f"❌ Database file not found: {DATABASE_PATH}")
         return 1
     
     missing_files = [f for f in EXCEL_FILES if not os.path.exists(f)]
     if missing_files:
-        print(f"[ERROR] Excel files not found: {', '.join(missing_files)}")
+        print(f"❌ Excel files not found: {', '.join(missing_files)}")
         return 1
     
-    # Run the test
-    print(f"=== DataSync Import/Delete Cycle Test ===")
-    print(f"Database: {os.path.basename(DATABASE_PATH)}")
-    print(f"Excel files: {len(EXCEL_FILES)} files")
-    print(f"Iterations: {ITERATIONS}")
+    # Set random seed for reproducible results in mode C
+    if mode == "C":
+        random.seed(42)
+        print(f"🎲 Random seed set to 42 for reproducible results")
     
-    test = ImportCycleTest(DATABASE_PATH, EXCEL_FILES, ITERATIONS)
+    # Run the test
+    mode_names = {"A": "All at Once", "B": "Alternating", "C": "Random"}
+    mode_name = mode_names.get(mode, "Unknown")
+    print(f"🚀 Starting DataSync Import/Delete Cycle Test - Mode {mode} ({mode_name})")
+    print(f"   Database: {os.path.basename(DATABASE_PATH)}")
+    print(f"   Excel files: {len(EXCEL_FILES)} files")
+    print(f"   Iterations: {iterations}")
+    
+    test = ImportCycleTest(DATABASE_PATH, EXCEL_FILES, iterations, mode)
     test.run_test()
     
     return 0

@@ -48,12 +48,36 @@ tmp/
 
 # Test outputs
 test_results_*.log
+test_import_cycle.log
 
 # Personal notes
 i need this thread summarized for context for a Cu.md
+
+# Data directories (exclude Excel files but keep structure)
+data/*.xls
+data/*.xlsx
+data/loaded/*.xls
+data/loaded/*.xlsx
+!data/.gitkeep
+!data/loaded/.gitkeep
+
+# Production setup helpers (may contain sensitive paths)
+setup_production_config.py
+
+# Test files
+test_new_system.py
 
 # Documentation that might contain sensitive data
 docs/*.xls
 docs/*.xlsx
 docs/*.accdb
 docs/*.mdb
+
+# Environment configuration
+.env
+.env.local
+.env.production
+
+# Database backups
+*.backup
+backup_*.accdb

@@ -56,31 +56,108 @@ This option exits the application.
 
 If you prefer direct command-line operations instead of the interactive menu, you can use these commands:
 
+#### NEW: Auto-Import System (Recommended)
+```bash
+# Check system status and see what files are ready for import
+python src\datasync\cli.py status
+
+# Automatically discover and import all new files from data directory (uses optimal one-by-one method)
+python src\datasync\cli.py auto-import
+
+# Auto-import with custom database path
+python src\datasync\cli.py auto-import --database "C:\path\to\your\database.accdb"
+
+# Auto-import with custom table and batch size
+python src\datasync\cli.py auto-import --database "C:\path\to\database.accdb" --table "YourTableName" --batch-size 2000
+
+# Force import a specific file
+python src\datasync\cli.py force-import
+
+# Force import with specific file and database
+python src\datasync\cli.py force-import "data\your_file.xlsx" --database "C:\path\to\database.accdb"
+```
+
 #### Viewing Tables and Data
 ```bash
 # View all tables in a database
-DataSync.exe validate C:\path\to\database.accdb
+python src\datasync\cli.py validate C:\path\to\database.accdb
 
 # Preview data in all tables
-DataSync.exe validate C:\path\to\database.accdb --preview
+python src\datasync\cli.py validate C:\path\to\database.accdb --preview
 
 # View a specific table with data preview
-DataSync.exe validate C:\path\to\database.accdb --table TableName --preview
+python src\datasync\cli.py validate C:\path\to\database.accdb --table TableName --preview
 ```
 
-#### Synchronizing Data
+#### Legacy Synchronizing Data
 ```bash
 # Import data from Excel to Access
-DataSync.exe sync C:\path\to\source.xlsx C:\path\to\destination.accdb
+python src\datasync\cli.py sync C:\path\to\source.xlsx C:\path\to\destination.accdb
 
 # Import with validation
-DataSync.exe sync C:\path\to\source.xlsx C:\path\to\destination.accdb --validate
+python src\datasync\cli.py sync C:\path\to\source.xlsx C:\path\to\destination.accdb --validate
 
 # Import with custom batch size (for large datasets)
-DataSync.exe sync C:\path\to\source.xlsx C:\path\to\destination.accdb --batch-size 5000
+python src\datasync\cli.py sync C:\path\to\source.xlsx C:\path\to\destination.accdb --batch-size 5000
 ```
 
-### 5. Working with Large Datasets
+### 5. Monthly Data Import Workflow (NEW)
+
+DataSync now includes an optimized workflow for monthly data imports:
+
+#### Setup (One-time)
+1. **Prepare Directory Structure**: The system automatically creates:
+   - `data/` - Place your new Excel files here
+   - `data/loaded/` - Processed files are automatically moved here
+
+2. **Configure Production Database**: 
+   ```bash
+   # Option 1: Specify database path each time
+   python src\datasync\cli.py auto-import --database "C:\path\to\your\production\database.accdb"
+   
+   # Option 2: Update default database locations (see Configuration section below)
+   ```
+
+#### Monthly Workflow
+1. **Download** your 2-3 monthly Excel files
+2. **Place files** in the `data/` directory
+3. **Check status**: `python src\datasync\cli.py status`
+4. **Import**: `python src\datasync\cli.py auto-import --database "C:\path\to\production\database.accdb"`
+5. **Verify**: Files are automatically moved to `data/loaded/` after successful import
+
+#### Why This Method is Optimal
+- Uses **one-by-one processing** (15% faster than batch processing based on performance testing)
+- **Automatic file discovery** - no need to specify individual files
+- **Automatic file management** - processed files are archived
+- **Built-in validation** and error handling
+- **Progress tracking** and detailed reporting
+
+### 6. Production Database Configuration
+
+#### Method 1: Command Line Parameter (Recommended)
+Always specify your production database path:
+```bash
+python src\datasync\cli.py auto-import --database "C:\path\to\your\production\database.accdb"
+```
+
+#### Method 2: Update Default Database Locations
+Edit the default locations in the CLI configuration by modifying the `DEFAULT_DB_LOCATIONS` in `src/datasync/cli.py`:
+```python
+DEFAULT_DB_LOCATIONS = [
+    Path("C:\\path\\to\\your\\production\\database.accdb"),  # Add your production database
+    Path.home() / "Documents" / "DataSync" / "database.accdb",
+    Path.cwd() / "database.accdb",
+]
+```
+
+#### Method 3: Environment Variable (Advanced)
+Set an environment variable for your production database:
+```bash
+set DATASYNC_DATABASE=C:\path\to\your\production\database.accdb
+python src\datasync\cli.py auto-import
+```
+
+### 7. Working with Large Datasets
 
 DataSync includes special features for handling large datasets efficiently:
 

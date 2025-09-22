@@ -25,6 +25,8 @@ if src_dir not in sys.path:
 # Now import from the database module
 from src.database.operations import DatabaseOperations
 from datasync.utils.logging import setup_logger
+from datasync.services.data_import_service import DataImportService
+from datasync.utils.file_discovery import FileDiscovery
 import logging
 import time
 import json
@@ -48,7 +50,13 @@ def find_database() -> Optional[Path]:
     return None
 
 def get_database_path() -> Path:
-    """Get the database path, prompting user if needed."""
+    """Get the database path, checking environment variable, default locations, then prompting user if needed."""
+    # Check environment variable first
+    env_db_path = os.environ.get('DATASYNC_DATABASE')
+    if env_db_path and os.path.exists(env_db_path):
+        click.echo(f"Using database from environment: {env_db_path}")
+        return Path(env_db_path)
+    
     # Try to find database in default locations
     db_path = find_database()
     
@@ -219,6 +227,231 @@ def diagnose():
     click.echo("=== End Diagnostics ===")
 
 @cli.command()
+@click.option('--database', type=click.Path(exists=True), help='Path to Access database')
+@click.option('--table', default='tblProjectedDataPTP', help='Target table for import')
+@click.option('--batch-size', type=int, default=1000, help='Batch size for database operations')
+@click.option('--no-move', is_flag=True, help='Do not move processed files to loaded directory')
+def auto_import(database, table, batch_size, no_move):
+    """Automatically discover and import new Excel files from data directory."""
+    try:
+        # Get database path
+        if not database:
+            database = get_database_path()
+        
+        click.echo("🔍 DataSync Auto-Import")
+        click.echo("=" * 50)
+        
+        # Initialize the import service
+        import_service = DataImportService(
+            database_path=str(database),
+            target_table=table
+        )
+        
+        # Check status first
+        status = import_service.get_status()
+        
+        click.echo(f"📂 Data directory: {status['file_discovery_status']['data_dir']}")
+        click.echo(f"📁 Loaded directory: {status['file_discovery_status']['loaded_dir']}")
+        click.echo(f"🗄️  Database: {status['database_path']}")
+        click.echo(f"📋 Target table: {status['target_table']}")
+        click.echo()
+        
+        # Display current status
+        if not status['database_connected']:
+            click.echo("❌ Database connection failed")
+            return
+        
+        if not status['file_discovery_status']['directories_exist']:
+            click.echo("❌ Data directories not found")
+            return
+        
+        new_files_count = status['file_discovery_status']['new_files_count']
+        
+        if new_files_count == 0:
+            click.echo("✅ No new files found for import")
+            click.echo("💡 Place Excel files in the data directory to import them")
+            return
+        
+        # Show files to be processed
+        click.echo(f"📊 Found {new_files_count} new file(s) to import:")
+        for filename in status['file_discovery_status']['new_files']:
+            click.echo(f"  • {filename}")
+        click.echo()
+        
+        # Confirm import
+        if not click.confirm(f"Import {new_files_count} file(s) using one-by-one method (optimal)?"):
+            click.echo("Import cancelled")
+            return
+        
+        # Perform the import
+        click.echo("\n🚀 Starting auto-import process...")
+        result = import_service.discover_and_import(
+            batch_size=batch_size,
+            move_processed=not no_move
+        )
+        
+        # Display results
+        click.echo("\n" + "=" * 50)
+        click.echo("📈 IMPORT RESULTS")
+        click.echo("=" * 50)
+        
+        if result['success']:
+            click.echo("✅ Import completed successfully!")
+        else:
+            click.echo("⚠️  Import completed with issues")
+        
+        click.echo(f"📊 Files discovered: {result.get('files_discovered', 0)}")
+        click.echo(f"✅ Files processed: {result.get('files_processed', 0)}")
+        click.echo(f"📝 Records imported: {result.get('records_imported', 0):,}")
+        
+        stats = result.get('stats', {})
+        if stats.get('total_errors', 0) > 0:
+            click.echo(f"❌ Files with errors: {stats['total_errors']}")
+            for error_info in stats.get('files_with_errors', []):
+                click.echo(f"  • {error_info['file']}: {error_info['error']}")
+        
+        click.echo(f"⏱️  Processing time: {stats.get('processing_time', 0):.2f} seconds")
+        
+        if not no_move and result.get('files_processed', 0) > 0:
+            click.echo("📦 Processed files moved to loaded directory")
+        
+        click.echo(f"\n{result['message']}")
+        
+    except Exception as e:
+        click.echo(f"❌ Error in auto-import: {str(e)}", err=True)
+        raise click.Abort()
+
+@cli.command()
+def status():
+    """Check status of data directories and files."""
+    try:
+        click.echo("📊 DataSync Status Check")
+        click.echo("=" * 50)
+        
+        # Get database path
+        db_path = find_database()
+        if not db_path:
+            db_path = "working db 8.25.2025 prodjectDataPTP.accdb"  # Default fallback
+        
+        # Initialize file discovery
+        file_discovery = FileDiscovery()
+        status = file_discovery.get_data_directory_status()
+        
+        # Check database
+        try:
+            db_ops = DatabaseOperations(str(db_path))
+            db_connected = db_ops.connect()
+            if db_connected:
+                db_ops.close()
+        except Exception:
+            db_connected = False
+        
+        # Display status
+        click.echo(f"📂 Data directory: {status['data_dir']}")
+        click.echo(f"📁 Loaded directory: {status['loaded_dir']}")
+        click.echo(f"🗄️  Database: {db_path}")
+        click.echo()
+        
+        # Directory status
+        if status['directories_exist']:
+            click.echo("✅ Data directories exist")
+        else:
+            click.echo("❌ Data directories missing")
+        
+        # Database status
+        if db_connected:
+            click.echo("✅ Database connection successful")
+        else:
+            click.echo("❌ Database connection failed")
+        
+        # Files status
+        click.echo(f"📊 New files ready for import: {status['new_files_count']}")
+        if status['new_files_count'] > 0:
+            click.echo("📝 Files to import:")
+            for filename in status['new_files']:
+                click.echo(f"  • {filename}")
+        
+        click.echo(f"📦 Previously loaded files: {status['loaded_files_count']}")
+        
+        # Overall readiness
+        click.echo()
+        ready = (status['directories_exist'] and db_connected and status['new_files_count'] > 0)
+        if ready:
+            click.echo("🚀 System ready for auto-import!")
+            click.echo("💡 Run 'datasync auto-import' to process new files")
+        elif status['new_files_count'] == 0:
+            click.echo("💤 No new files to import")
+            click.echo("💡 Place Excel files in the data directory")
+        else:
+            click.echo("⚠️  System not ready for import")
+            if not status['directories_exist']:
+                click.echo("   - Data directories missing")
+            if not db_connected:
+                click.echo("   - Database connection failed")
+        
+    except Exception as e:
+        click.echo(f"❌ Error checking status: {str(e)}", err=True)
+        raise click.Abort()
+
+@cli.command()
+@click.argument('filename', required=False)
+@click.option('--database', type=click.Path(exists=True), help='Path to Access database')
+@click.option('--table', default='tblProjectedDataPTP', help='Target table for import')
+@click.option('--no-move', is_flag=True, help='Do not move processed file to loaded directory')
+def force_import(filename, database, table, no_move):
+    """Force import a specific file (for manual operation)."""
+    try:
+        # Get database path
+        if not database:
+            database = get_database_path()
+        
+        # Get filename if not provided
+        if not filename:
+            # Show available files
+            file_discovery = FileDiscovery()
+            new_files = file_discovery.discover_new_files()
+            
+            if not new_files:
+                click.echo("No files available for import in data directory")
+                return
+            
+            click.echo("Available files:")
+            for i, file_path in enumerate(new_files, 1):
+                click.echo(f"{i}. {file_path.name}")
+            
+            choice = click.prompt("Select file number", type=int)
+            if 1 <= choice <= len(new_files):
+                filename = str(new_files[choice - 1])
+            else:
+                click.echo("Invalid choice")
+                return
+        
+        click.echo(f"🔧 Force importing: {Path(filename).name}")
+        
+        # Initialize import service
+        import_service = DataImportService(
+            database_path=str(database),
+            target_table=table
+        )
+        
+        # Perform the import
+        result = import_service.force_import_file(filename, move_after=not no_move)
+        
+        # Display results
+        if result['success']:
+            click.echo(f"✅ Successfully imported {result.get('records_imported', 0)} records")
+            if 'moved_to' in result:
+                click.echo(f"📦 File moved to: {result['moved_to']}")
+        else:
+            click.echo(f"❌ Import failed: {result['message']}")
+        
+        click.echo(f"⏱️  Processing time: {result.get('processing_time', 0):.2f} seconds")
+        
+    except Exception as e:
+        click.echo(f"❌ Error in force import: {str(e)}", err=True)
+        raise click.Abort()
+
+@cli.command()
 def menu():
     """Start the interactive menu mode."""
     click.clear()
@@ -226,9 +459,11 @@ def menu():
     
     def show_main_menu():
         click.echo("\n=== DataSync Main Menu ===")
-        click.echo("1. Database Operations")
-        click.echo("2. Exit")
-        return click.prompt("\nEnter your choice (1-2)", type=int)
+        click.echo("1. Auto-Import (Discover & Import New Files)")
+        click.echo("2. Check System Status")
+        click.echo("3. Manual Database Operations")
+        click.echo("4. Exit")
+        return click.prompt("\nEnter your choice (1-4)", type=int)
     
     def show_database_menu():
         click.echo("\n=== Database Operations Menu ===")
@@ -249,7 +484,148 @@ def menu():
     while True:
         choice = show_main_menu()
         
-        if choice == 1:  # Database Operations
+        if choice == 1:  # Auto-Import
+            try:
+                # Get database path if not set
+                if not db_path:
+                    db_path = get_database_path()
+                
+                click.echo("\n🔍 DataSync Auto-Import")
+                click.echo("=" * 40)
+                
+                # Initialize import service
+                import_service = DataImportService(
+                    database_path=str(db_path),
+                    target_table="tblProjectedDataPTP"
+                )
+                
+                # Check status
+                status = import_service.get_status()
+                
+                # Display status
+                click.echo(f"📂 Data directory: {status['file_discovery_status']['data_dir']}")
+                click.echo(f"📁 Loaded directory: {status['file_discovery_status']['loaded_dir']}")
+                click.echo(f"🗄️  Database: {status['database_path']}")
+                click.echo()
+                
+                if not status['database_connected']:
+                    click.echo("❌ Database connection failed")
+                    continue
+                
+                new_files_count = status['file_discovery_status']['new_files_count']
+                
+                if new_files_count == 0:
+                    click.echo("✅ No new files found for import")
+                    click.echo("💡 Place Excel files in the data directory to import them")
+                    continue
+                
+                # Show files to be processed
+                click.echo(f"📊 Found {new_files_count} new file(s) to import:")
+                for filename in status['file_discovery_status']['new_files']:
+                    click.echo(f"  • {filename}")
+                click.echo()
+                
+                # Confirm import
+                if click.confirm(f"Import {new_files_count} file(s) using one-by-one method (optimal)?"):
+                    click.echo("\n🚀 Starting auto-import process...")
+                    result = import_service.discover_and_import(move_processed=True)
+                    
+                    # Display results
+                    click.echo("\n" + "=" * 40)
+                    click.echo("📈 IMPORT RESULTS")
+                    click.echo("=" * 40)
+                    
+                    if result['success']:
+                        click.echo("✅ Import completed successfully!")
+                    else:
+                        click.echo("⚠️  Import completed with issues")
+                    
+                    click.echo(f"📊 Files discovered: {result.get('files_discovered', 0)}")
+                    click.echo(f"✅ Files processed: {result.get('files_processed', 0)}")
+                    click.echo(f"📝 Records imported: {result.get('records_imported', 0):,}")
+                    
+                    stats = result.get('stats', {})
+                    if stats.get('total_errors', 0) > 0:
+                        click.echo(f"❌ Files with errors: {stats['total_errors']}")
+                    
+                    click.echo(f"⏱️  Processing time: {stats.get('processing_time', 0):.2f} seconds")
+                    click.echo("📦 Processed files moved to loaded directory")
+                else:
+                    click.echo("Import cancelled")
+                    
+            except Exception as e:
+                click.echo(f"❌ Error in auto-import: {str(e)}")
+        
+        elif choice == 2:  # Check System Status
+            try:
+                click.echo("\n📊 DataSync System Status")
+                click.echo("=" * 40)
+                
+                # Get database path
+                if not db_path:
+                    db_path = find_database()
+                    if not db_path:
+                        db_path = "working db 8.25.2025 prodjectDataPTP.accdb"
+                
+                # Initialize file discovery
+                file_discovery = FileDiscovery()
+                status = file_discovery.get_data_directory_status()
+                
+                # Check database
+                try:
+                    db_ops = DatabaseOperations(str(db_path))
+                    db_connected = db_ops.connect()
+                    if db_connected:
+                        db_ops.close()
+                except Exception:
+                    db_connected = False
+                
+                # Display status
+                click.echo(f"📂 Data directory: {status['data_dir']}")
+                click.echo(f"📁 Loaded directory: {status['loaded_dir']}")
+                click.echo(f"🗄️  Database: {db_path}")
+                click.echo()
+                
+                # Directory status
+                if status['directories_exist']:
+                    click.echo("✅ Data directories exist")
+                else:
+                    click.echo("❌ Data directories missing")
+                
+                # Database status
+                if db_connected:
+                    click.echo("✅ Database connection successful")
+                else:
+                    click.echo("❌ Database connection failed")
+                
+                # Files status
+                click.echo(f"📊 New files ready for import: {status['new_files_count']}")
+                if status['new_files_count'] > 0:
+                    click.echo("📝 Files to import:")
+                    for filename in status['new_files']:
+                        click.echo(f"  • {filename}")
+                
+                click.echo(f"📦 Previously loaded files: {status['loaded_files_count']}")
+                
+                # Overall readiness
+                click.echo()
+                ready = (status['directories_exist'] and db_connected and status['new_files_count'] > 0)
+                if ready:
+                    click.echo("🚀 System ready for auto-import!")
+                elif status['new_files_count'] == 0:
+                    click.echo("💤 No new files to import")
+                    click.echo("💡 Place Excel files in the data directory")
+                else:
+                    click.echo("⚠️  System not ready for import")
+                    if not status['directories_exist']:
+                        click.echo("   - Data directories missing")
+                    if not db_connected:
+                        click.echo("   - Database connection failed")
+                        
+            except Exception as e:
+                click.echo(f"❌ Error checking status: {str(e)}")
+        
+        elif choice == 3:  # Manual Database Operations
             if not db_path:
                 db_path = get_database_path()
             
@@ -897,7 +1273,7 @@ def menu():
                 else:
                     click.echo("Invalid choice. Please try again.")
             
-        elif choice == 2:  # Exit
+        elif choice == 4:  # Exit
             click.echo("Exiting DataSync. Goodbye!")
             break
             
